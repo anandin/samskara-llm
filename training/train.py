@@ -16,7 +16,10 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import yaml
 
+from transformers import AutoTokenizer
+
 from samskara_llm.model import create_samskara_llm
+from training.data import load_datasets
 from training.losses import samskara_loss, compute_s3_score
 
 
@@ -170,15 +173,46 @@ def main():
     # TensorBoard
     writer = SummaryWriter(log_dir=f"{args.output_dir}/runs")
     
+    # Load tokenizer and datasets
+    print("Loading tokenizer and datasets...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
+    except Exception as e:
+        print(f"Could not load tokenizer for {args.model}: {e}")
+        print("Falling back to char-level encoding (no tokenizer).")
+        tokenizer = None
+
+    train_loader, val_loader = load_datasets(args, tokenizer)
+
     # Training loop
-    print("\n🚀 Starting training...")
+    print("\nStarting training...")
     for epoch in range(args.epochs):
-        print(f"\n📚 Epoch {epoch + 1}/{args.epochs}")
-        
-        # TODO: Load actual data
-        # For now, this is a skeleton
-        print("(Training loop skeleton - implement data loading)")
-        
+        print(f"\nEpoch {epoch + 1}/{args.epochs}")
+
+        train_metrics = train_epoch(model, train_loader, optimizer, device, epoch, writer)
+        print(f"Train — loss: {train_metrics['loss']:.4f}  S3: {train_metrics['s3_score']:.3f}")
+
+        val_metrics = validate(model, val_loader, device)
+        print(f"Val   — loss: {val_metrics['loss']:.4f}  S3: {val_metrics['s3_score']:.3f}")
+
+        writer.add_scalar("Val/loss", val_metrics["loss"], epoch)
+        writer.add_scalar("Val/s3", val_metrics["s3_score"], epoch)
+
+        # Save per-epoch checkpoint
+        ckpt_path = Path(args.output_dir) / f"checkpoint_epoch{epoch + 1}.pt"
+        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "train_metrics": train_metrics,
+                "val_metrics": val_metrics,
+            },
+            ckpt_path,
+        )
+        print(f"Checkpoint saved: {ckpt_path}")
+
     # Save model
     output_path = Path(args.output_dir) / "final_model.pt"
     output_path.parent.mkdir(parents=True, exist_ok=True)
