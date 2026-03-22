@@ -20,10 +20,12 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import requests
 
@@ -48,6 +50,14 @@ CLAUDE_COSTS = {
 
 REPO_URL = "https://github.com/anandin/samskara-llm.git"
 
+# Project root (one level up from scripts/)
+_PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def _bundle_file(rel_path: str) -> str:
+    """Read a project file and return its base64-encoded content."""
+    return base64.b64encode((_PROJECT_ROOT / rel_path).read_bytes()).decode()
+
 
 def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str) -> dict:
     gpu = GPU_TYPES[gpu_type]
@@ -70,15 +80,28 @@ def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str) -> di
 
 def build_start_script(mode: str, model_name: str, config: str) -> str:
     if mode == "autoresearch":
+        # Bundle files at deploy-time so the pod never needs to reach GitHub.
+        # The RunPod base image already has torch; only install the extras.
+        files = {
+            "autoresearch/prepare.py": _bundle_file("autoresearch/prepare.py"),
+            "autoresearch/run.py":     _bundle_file("autoresearch/run.py"),
+            "autoresearch/train.py":   _bundle_file("autoresearch/train.py"),
+            "autoresearch/program.md": _bundle_file("autoresearch/program.md"),
+        }
+
+        extract_block = "mkdir -p autoresearch data/autoresearch\n"
+        for path, b64 in files.items():
+            extract_block += f"base64 -d > {path} << 'B64END'\n{b64}\nB64END\n"
+
         return f"""#!/bin/bash
 set -e
 echo "Setting up Samskara-LLM autoresearch environment..."
 
 cd /workspace
-git clone {REPO_URL} samskara-llm
-cd samskara-llm
 
-pip install -r requirements.txt
+# Write bundled autoresearch files (no git clone needed)
+{extract_block}
+pip install datasets tiktoken anthropic --quiet
 
 echo "Preparing datasets (GSM8K + ETHICS)..."
 python autoresearch/prepare.py
