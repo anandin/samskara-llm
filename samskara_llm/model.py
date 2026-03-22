@@ -13,10 +13,56 @@ import torch.nn.functional as F
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 
+class AhamkaraLayer(nn.Module):
+    """
+    Ahamkara (अहंकार) — the ego/identity layer of the Antahkarana.
+
+    In Vedic philosophy, Ahamkara is the ego-sense: the "I am" that synthesizes
+    all experience into a unified self. Here it produces a context-conditioned
+    identity vector that biases all Manas processing.
+
+    The identity_prior is a stable baseline "self" (learned across all training).
+    The context_encoder adapts the identity to what's currently being processed.
+    A blend gate controls how much the moment-to-moment context shifts the self.
+
+    This lets the model maintain a coherent personality while remaining sensitive
+    to context — exactly the Ahamkara function in Antahkarana philosophy.
+    """
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        # Persistent baseline identity — the stable "I" across all contexts
+        self.identity_prior = nn.Parameter(torch.randn(d_model) * 0.02)
+        # Context encoder: adapts identity to what's currently being processed
+        self.context_encoder = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+        )
+        # Blend gate: [0=all context, 1=all prior]
+        # Initialise near 0.5 so identity starts half-stable, half-adaptive
+        self.gate = nn.Linear(d_model, 1)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, context: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            context: [batch, d_model] — pooled input representation (query_vec)
+        Returns:
+            identity: [batch, d_model] — context-conditioned identity vector
+        """
+        context_self = self.norm(self.context_encoder(context))      # [B, D]
+        blend        = torch.sigmoid(self.gate(context))             # [B, 1]
+        identity     = blend * self.identity_prior + (1 - blend) * context_self
+        return identity                                               # [B, D]
+
+
 class ChittaEncoder(nn.Module):
     """
     Differentiable retrieval from learned memory bank.
-    
+
     Learns to encode query → ChittaField (memory matrix)
     Replaces: pgvector + BM25 + Neo4j with neural retrieval
     """
@@ -408,8 +454,8 @@ class SamskaraLLM(nn.Module):
         
         d_model = config['d_model']
         
-        # Ahamkara (identity) - learnable embedding
-        self.ahamkara = nn.Parameter(torch.randn(d_model))
+        # Ahamkara (identity) — context-conditioned identity layer
+        self.ahamkara = AhamkaraLayer(d_model)
         
         # Dharma (ethical constraints) - learnable rule embeddings
         self.dharma = nn.Parameter(torch.randn(config['n_dharma_rules'], d_model))
@@ -473,10 +519,14 @@ class SamskaraLLM(nn.Module):
         chitta_field, attention_weights, seed_indices = self.chitta(
             query_vec, vritti_types
         )
-        
+
+        # 2.5. Ahamkara — context-conditioned identity
+        # Identity adapts to the current query while retaining a stable baseline.
+        ahamkara_vec = self.ahamkara(query_vec)  # [batch, d_model]
+
         # 3. Manas processing (fast, associative)
         manas_out, manas_signals = self.manas(
-            x, chitta_field, self.ahamkara, self.dharma.mean(dim=0)
+            x, chitta_field, ahamkara_vec, self.dharma.mean(dim=0)
         )
         
         # 4. Router decides elevation

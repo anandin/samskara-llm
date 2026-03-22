@@ -196,8 +196,53 @@ def deploy_to_runpod(config: dict) -> tuple[str, str]:
     return pod["id"], pod["machine"]["podHostId"]
 
 
+def apply_phase_defaults(args):
+    """
+    --phase shortcuts: pre-set GPU, mode, hours for the three budget phases.
+
+      Phase 1  Autoresearch overnight  RTX-4090   8h   ~$4-6
+      Phase 2  Synthetic ATMAN data    (CPU only, no GPU pod needed)
+      Phase 3  Full Qwen2.5-7B train   A100-80GB  24h  ~$60
+
+    Any explicit flag overrides the phase default.
+    """
+    if args.phase is None:
+        return
+
+    phase_defaults = {
+        1: dict(mode="autoresearch", gpu="RTX-4090",  hours=8,
+                model="Qwen/Qwen2.5-1.5B-Instruct"),
+        3: dict(mode="train",        gpu="A100",       hours=24,
+                model="Qwen/Qwen2.5-7B-Instruct"),
+    }
+
+    if args.phase == 2:
+        print("Phase 2 — synthetic data generation.")
+        print("This only needs the Anthropic API, not a GPU pod.")
+        print()
+        print("Run locally or on any machine with ANTHROPIC_API_KEY set:")
+        print("  python scripts/generate_atman_data.py --n 1000 --source all")
+        print()
+        print("Cost: ~$2.80 (Haiku, 1000 records)")
+        sys.exit(0)
+
+    defaults = phase_defaults.get(args.phase, {})
+    for key, val in defaults.items():
+        # Only apply if the user didn't set it explicitly
+        if getattr(args, key.replace("-", "_")) == parser.get_default(key.replace("-", "_")):
+            setattr(args, key.replace("-", "_"), val)
+
+    print(f"Phase {args.phase} defaults applied: "
+          f"--mode {args.mode} --gpu {args.gpu} --hours {args.hours}")
+    print()
+
+
 def main():
+    global parser
     parser = argparse.ArgumentParser(description="Deploy Samskara-LLM to RunPod")
+    parser.add_argument("--phase",  type=int, choices=[1, 2, 3], default=None,
+                        help="Budget phase shortcut: 1=autoresearch RTX4090 8h, "
+                             "2=data gen (CPU, prints command), 3=full train A100 24h")
     parser.add_argument("--mode",   choices=["train", "autoresearch"], default="autoresearch",
                         help="Deployment mode")
     parser.add_argument("--gpu",    choices=list(GPU_TYPES.keys()), default="RTX-4090",
@@ -214,6 +259,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="Print config and cost estimate without deploying")
     args = parser.parse_args()
+
+    apply_phase_defaults(args)
 
     gpu = GPU_TYPES[args.gpu]
     costs = estimate_costs(args.gpu, args.hours, args.mode, args.agent_model)
