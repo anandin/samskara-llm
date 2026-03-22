@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """
-Deploy Samskara-LLM training to RunPod GPU cloud.
+Deploy Samskara-LLM to RunPod GPU cloud.
+
+Two modes:
+  --mode train        Full training run (Qwen/Llama base + Samskara layers)
+  --mode autoresearch Karpathy-style overnight agent research loop
 
 Usage:
-    python scripts/deploy_to_runpod.py --gpu A100 --model llama-3.1-8b
+    # Dry-run cost estimate (no API calls)
+    python scripts/deploy_to_runpod.py --gpu RTX-4090 --mode autoresearch --hours 8 --dry-run
+
+    # Deploy autoresearch overnight (~$4-6 total)
+    RUNPOD_API_KEY=xxx ANTHROPIC_API_KEY=sk-ant-xxx \\
+        python scripts/deploy_to_runpod.py --gpu RTX-4090 --mode autoresearch --hours 8
+
+    # Deploy full training (existing behavior)
+    RUNPOD_API_KEY=xxx HF_TOKEN=xxx \\
+        python scripts/deploy_to_runpod.py --gpu RTX-4090 --mode train --model Qwen/Qwen2.5-1.5B-Instruct
 """
 
 import argparse
@@ -12,182 +25,235 @@ import os
 import subprocess
 import sys
 
+import requests
+
 # RunPod API configuration
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 RUNPOD_API_URL = "https://api.runpod.io/graphql"
 
-# GPU types and pricing (as of 2024)
+# GPU types and pricing
 GPU_TYPES = {
-    "A100": {"id": "NVIDIA A100 80GB", "price_per_hr": 2.49, "vram": 80},
-    "A100-40GB": {"id": "NVIDIA A100-PCIE-40GB", "price_per_hr": 1.99, "vram": 40},
-    "A40": {"id": "NVIDIA A40", "price_per_hr": 0.79, "vram": 48},
-    "RTX-A6000": {"id": "NVIDIA RTX A6000", "price_per_hr": 0.79, "vram": 48},
     "RTX-4090": {"id": "NVIDIA GeForce RTX 4090", "price_per_hr": 0.44, "vram": 24},
+    "A40":      {"id": "NVIDIA A40",               "price_per_hr": 0.79, "vram": 48},
+    "RTX-A6000":{"id": "NVIDIA RTX A6000",         "price_per_hr": 0.79, "vram": 48},
+    "A100-40GB":{"id": "NVIDIA A100-PCIE-40GB",    "price_per_hr": 1.99, "vram": 40},
+    "A100":     {"id": "NVIDIA A100 80GB",          "price_per_hr": 2.49, "vram": 80},
 }
 
+# Claude API cost estimates (input $/M, output $/M)
+CLAUDE_COSTS = {
+    "claude-haiku-4-5-20251001": {"input": 0.80,  "output": 4.00},
+    "claude-sonnet-4-6":         {"input": 3.00,  "output": 15.00},
+}
 
-def create_pod_config(
-    gpu_type: str,
-    model_name: str,
-    training_config: str,
-    hours: int = 24,
-) -> dict:
-    """Create RunPod pod configuration."""
-    
-    gpu = GPU_TYPES.get(gpu_type, GPU_TYPES["A100"])
-    
-    config = {
-        "cloudType": "COMMUNITY",  # or "SECURE" for privacy
-        "gpuCount": 1,
-        "volumeInGb": 100,
-        "containerDiskInGb": 50,
-        "minVcpuCount": 8,
-        "minMemoryInGb": 32,
-        "gpuTypeId": gpu["id"],
-        "name": f"samskara-llm-{model_name.replace('/', '-').lower()}",
-        "imageName": "runpod/pytorch:2.2.0-py3.10-cuda12.1-devel-ubuntu22.04",
-        "dockerArgs": "",
-        "ports": "8888/http,6006/http,22/tcp",
-        "volumeMountPath": "/workspace",
-        "env": [
-            {"key": "MODEL_NAME", "value": model_name},
-            {"key": "TRAINING_CONFIG", "value": training_config},
-            {"key": "HF_TOKEN", "value": os.getenv("HF_TOKEN", "")},
-            {"key": "WANDB_API_KEY", "value": os.getenv("WANDB_API_KEY", "")},
-        ],
-        "startScript": """#!/bin/bash
+REPO_URL = "https://github.com/anandin/samskara-llm.git"
+
+
+def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str) -> dict:
+    gpu = GPU_TYPES[gpu_type]
+    gpu_cost = gpu["price_per_hr"] * hours
+
+    api_cost = 0.0
+    if mode == "autoresearch":
+        experiments = (hours * 60) // 5  # one 5-min experiment per slot
+        # Each experiment: ~4100 input tokens, ~800 output tokens
+        rates = CLAUDE_COSTS.get(agent_model, CLAUDE_COSTS["claude-haiku-4-5-20251001"])
+        api_cost = experiments * (4100 * rates["input"] + 800 * rates["output"]) / 1_000_000
+
+    return {
+        "gpu_cost": gpu_cost,
+        "api_cost": api_cost,
+        "total": gpu_cost + api_cost,
+        "experiments": (hours * 60) // 5 if mode == "autoresearch" else None,
+    }
+
+
+def build_start_script(mode: str, model_name: str, config: str) -> str:
+    if mode == "autoresearch":
+        return f"""#!/bin/bash
 set -e
+echo "Setting up Samskara-LLM autoresearch environment..."
 
-echo "🧘 Setting up Samskara-LLM training environment..."
-
-# Clone repo
 cd /workspace
-git clone https://github.com/anandin/samskara-llm.git
+git clone {REPO_URL} samskara-llm
 cd samskara-llm
 
-# Install dependencies
+pip install -r requirements.txt
+
+echo "Preparing datasets (GSM8K + ETHICS)..."
+python autoresearch/prepare.py
+
+echo "Starting autoresearch loop for $RESEARCH_HOURS hours..."
+python autoresearch/run.py \\
+    --hours $RESEARCH_HOURS \\
+    --model $AGENT_MODEL
+
+echo "Autoresearch complete. Results in autoresearch/run_log.txt"
+"""
+    else:
+        return f"""#!/bin/bash
+set -e
+echo "Setting up Samskara-LLM training environment..."
+
+cd /workspace
+git clone {REPO_URL} samskara-llm
+cd samskara-llm
+
 pip install -r requirements.txt
 pip install flash-attn --no-build-isolation
 
-# Login to HuggingFace for model access
 huggingface-cli login --token $HF_TOKEN
 
-# Start training
-echo "🚀 Starting training with config: $TRAINING_CONFIG"
+echo "Starting training with config: $TRAINING_CONFIG"
 python training/train.py \\
     --model $MODEL_NAME \\
     --config $TRAINING_CONFIG \\
     --output-dir /workspace/outputs \\
     --wandb-project samskara-llm
 
-echo "✅ Training complete!"
-
-# Upload results to cloud storage
+echo "Training complete!"
 aws s3 sync /workspace/outputs s3://samskara-llm/outputs/$(date +%Y%m%d-%H%M%S)/
-""",
+"""
+
+
+def create_pod_config(
+    gpu_type: str,
+    mode: str,
+    model_name: str,
+    training_config: str,
+    hours: int,
+    agent_model: str,
+) -> dict:
+    gpu = GPU_TYPES[gpu_type]
+
+    env = [
+        {"key": "MODEL_NAME",      "value": model_name},
+        {"key": "TRAINING_CONFIG", "value": training_config},
+        {"key": "HF_TOKEN",        "value": os.getenv("HF_TOKEN", "")},
+        {"key": "WANDB_API_KEY",   "value": os.getenv("WANDB_API_KEY", "")},
+    ]
+
+    if mode == "autoresearch":
+        env += [
+            {"key": "ANTHROPIC_API_KEY", "value": os.getenv("ANTHROPIC_API_KEY", "")},
+            {"key": "RESEARCH_HOURS",    "value": str(hours)},
+            {"key": "AGENT_MODEL",       "value": agent_model},
+        ]
+
+    return {
+        "cloudType":         "COMMUNITY",
+        "gpuCount":          1,
+        "volumeInGb":        50,
+        "containerDiskInGb": 30,
+        "minVcpuCount":      4,
+        "minMemoryInGb":     16,
+        "gpuTypeId":         gpu["id"],
+        "name":              f"samskara-{mode}-{gpu_type.lower()}",
+        "imageName":         "runpod/pytorch:2.2.0-py3.10-cuda12.1-devel-ubuntu22.04",
+        "ports":             "8888/http,6006/http,22/tcp",
+        "volumeMountPath":   "/workspace",
+        "env":               env,
+        "startScript":       build_start_script(mode, model_name, training_config),
     }
-    
-    return config
 
 
-def deploy_to_runpod(config: dict) -> str:
-    """Deploy pod to RunPod."""
-    
+def deploy_to_runpod(config: dict) -> tuple[str, str]:
     if not RUNPOD_API_KEY:
-        print("❌ RUNPOD_API_KEY not set")
-        print("   Get your API key from: https://www.runpod.io/console/settings")
+        print("RUNPOD_API_KEY not set")
+        print("  Get your key at: https://www.runpod.io/console/settings")
         sys.exit(1)
-    
-    # GraphQL mutation to create pod
+
     query = """
     mutation PodFindAndDeployOnDemand($input: PodFindAndDeployOnDemandInput!) {
         podFindAndDeployOnDemand(input: $input) {
             id
             imageName
-            env
-            machineId
             machine {
                 podHostId
             }
         }
     }
     """
-    
-    variables = {"input": config}
-    
-    # Execute GraphQL request
-    import requests
-    
+
     response = requests.post(
-        RUNPOD_API_KEY,  # Actually need to check API format
-        json={"query": query, "variables": variables},
+        RUNPOD_API_URL,
+        json={"query": query, "variables": {"input": config}},
         headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"},
+        timeout=30,
     )
-    
+
     if response.status_code != 200:
-        print(f"❌ API error: {response.status_code}")
+        print(f"API error: {response.status_code}")
         print(response.text)
         sys.exit(1)
-    
+
     data = response.json()
-    
     if "errors" in data:
-        print(f"❌ GraphQL error: {data['errors']}")
+        print(f"GraphQL error: {data['errors']}")
         sys.exit(1)
-    
-    pod_id = data["data"]["podFindAndDeployOnDemand"]["id"]
-    host_id = data["data"]["podFindAndDeployOnDemand"]["machine"]["podHostId"]
-    
-    return pod_id, host_id
+
+    pod = data["data"]["podFindAndDeployOnDemand"]
+    return pod["id"], pod["machine"]["podHostId"]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Deploy Samskara-LLM training to RunPod")
-    parser.add_argument("--gpu", choices=list(GPU_TYPES.keys()), default="A100",
-                       help="GPU type")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct",
-                       help="Base model to train")
+    parser = argparse.ArgumentParser(description="Deploy Samskara-LLM to RunPod")
+    parser.add_argument("--mode",   choices=["train", "autoresearch"], default="autoresearch",
+                        help="Deployment mode")
+    parser.add_argument("--gpu",    choices=list(GPU_TYPES.keys()), default="RTX-4090",
+                        help="GPU type")
+    parser.add_argument("--hours",  type=int, default=8,
+                        help="Run duration in hours")
+    parser.add_argument("--model",  default="Qwen/Qwen2.5-1.5B-Instruct",
+                        help="Base model for training mode")
     parser.add_argument("--config", default="configs/poc.yaml",
-                       help="Training config file")
-    parser.add_argument("--hours", type=int, default=24,
-                       help="Max training hours (auto-shutdown)")
+                        help="Training config (train mode only)")
+    parser.add_argument("--agent-model", default="claude-haiku-4-5-20251001",
+                        choices=list(CLAUDE_COSTS.keys()),
+                        help="Claude model for autoresearch agent (autoresearch mode only)")
     parser.add_argument("--dry-run", action="store_true",
-                       help="Print config without deploying")
-    
+                        help="Print config and cost estimate without deploying")
     args = parser.parse_args()
-    
-    print(f"🚀 Deploying Samskara-LLM training")
-    print(f"   GPU: {args.gpu}")
-    print(f"   Model: {args.model}")
-    print(f"   Config: {args.config}")
+
+    gpu = GPU_TYPES[args.gpu]
+    costs = estimate_costs(args.gpu, args.hours, args.mode, args.agent_model)
+
+    print(f"Mode:  {args.mode}")
+    print(f"GPU:   {args.gpu}  ({gpu['vram']}GB VRAM)  ${gpu['price_per_hr']:.2f}/hr")
+    print(f"Hours: {args.hours}h")
+    if args.mode == "autoresearch":
+        print(f"Agent: {args.agent_model}")
+        print(f"       ~{costs['experiments']} experiments")
     print()
-    
-    # Create config
-    config = create_pod_config(args.gpu, args.model, args.config, args.hours)
-    
+    print(f"  GPU cost:   ${costs['gpu_cost']:.2f}")
+    if args.mode == "autoresearch":
+        print(f"  API cost:   ${costs['api_cost']:.2f}  (Claude {args.agent_model})")
+    print(f"  TOTAL:      ${costs['total']:.2f}")
+    print()
+
+    config = create_pod_config(
+        args.gpu, args.mode, args.model, args.config, args.hours, args.agent_model
+    )
+
     if args.dry_run:
-        print("📋 Configuration (dry run):")
-        print(json.dumps(config, indent=2))
+        print("Dry run — pod config:")
+        config_display = {k: v for k, v in config.items() if k != "startScript"}
+        print(json.dumps(config_display, indent=2))
+        print()
+        print("Start script:")
+        print(config["startScript"])
         return
-    
-    # Deploy
-    try:
-        pod_id, host_id = deploy_to_runpod(config)
-        
-        print(f"✅ Pod created successfully!")
-        print(f"   Pod ID: {pod_id}")
-        print(f"   Host: {host_id}")
-        print()
-        print(f"🔗 Monitor at: https://www.runpod.io/console/pods")
-        print()
-        print(f"📊 Training logs:")
-        print(f"   runpodctl logs {pod_id}")
-        print()
-        print(f"⏱️  Estimated cost: ${GPU_TYPES[args.gpu]['price_per_hr'] * args.hours:.2f}")
-        
-    except Exception as e:
-        print(f"❌ Deployment failed: {e}")
-        sys.exit(1)
+
+    pod_id, host_id = deploy_to_runpod(config)
+
+    print(f"Pod created: {pod_id}")
+    print(f"Host:        {host_id}")
+    print(f"Monitor:     https://www.runpod.io/console/pods")
+    print()
+    print(f"Logs:  runpodctl logs {pod_id}")
+    if args.mode == "autoresearch":
+        print(f"Results will be in autoresearch/run_log.txt on the pod.")
+        print(f"SSH in to retrieve: runpodctl exec {pod_id} -- cat autoresearch/run_log.txt")
 
 
 if __name__ == "__main__":
