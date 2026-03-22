@@ -78,64 +78,25 @@ def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str) -> di
     }
 
 
-def build_start_script(mode: str, model_name: str, config: str) -> str:
-    if mode == "autoresearch":
-        # Bundle files at deploy-time so the pod never needs to reach GitHub.
-        # The RunPod base image already has torch; only install the extras.
-        files = {
-            "autoresearch/prepare.py": _bundle_file("autoresearch/prepare.py"),
-            "autoresearch/run.py":     _bundle_file("autoresearch/run.py"),
-            "autoresearch/train.py":   _bundle_file("autoresearch/train.py"),
-            "autoresearch/program.md": _bundle_file("autoresearch/program.md"),
-        }
-
-        extract_block = "mkdir -p autoresearch data/autoresearch\n"
-        for path, b64 in files.items():
-            extract_block += f"base64 -d > {path} << 'B64END'\n{b64}\nB64END\n"
-
-        return f"""#!/bin/bash
-set -e
-echo "Setting up Samskara-LLM autoresearch environment..."
-
-cd /workspace
-
-# Write bundled autoresearch files (no git clone needed)
-{extract_block}
-pip install datasets tiktoken anthropic --quiet
-
-echo "Preparing datasets (GSM8K + ETHICS)..."
-python autoresearch/prepare.py
-
-echo "Starting autoresearch loop for $RESEARCH_HOURS hours..."
-python autoresearch/run.py \\
-    --hours $RESEARCH_HOURS \\
-    --model $AGENT_MODEL
-
-echo "Autoresearch complete. Results in autoresearch/run_log.txt"
-"""
-    else:
-        return f"""#!/bin/bash
-set -e
-echo "Setting up Samskara-LLM training environment..."
-
-cd /workspace
-git clone {REPO_URL} samskara-llm
-cd samskara-llm
-
-pip install -r requirements.txt
-pip install flash-attn --no-build-isolation
-
-huggingface-cli login --token $HF_TOKEN
-
-echo "Starting training with config: $TRAINING_CONFIG"
-python training/train.py \\
-    --model $MODEL_NAME \\
-    --config $TRAINING_CONFIG \\
-    --output-dir /workspace/outputs \\
-    --wandb-project samskara-llm
-
-echo "Training complete!"
-aws s3 sync /workspace/outputs s3://samskara-llm/outputs/$(date +%Y%m%d-%H%M%S)/
+# Python bootstrap script executed on the pod via dockerArgs.
+# Reads source files from env vars (base64), writes them, then runs the loop.
+_AUTORESEARCH_BOOTSTRAP = """\
+import base64, os, pathlib, subprocess, sys
+os.chdir('/workspace')
+for path, key in [
+    ('autoresearch/prepare.py', 'FILE_PREPARE_PY'),
+    ('autoresearch/run.py',     'FILE_RUN_PY'),
+    ('autoresearch/train.py',   'FILE_TRAIN_PY'),
+    ('autoresearch/program.md', 'FILE_PROGRAM_MD'),
+]:
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(base64.b64decode(os.environ[key]))
+subprocess.run([sys.executable,'-m','pip','install','datasets','tiktoken','anthropic','-q'], check=True)
+subprocess.run([sys.executable,'autoresearch/prepare.py'], check=True)
+subprocess.run([sys.executable,'autoresearch/run.py',
+    '--hours', os.environ.get('RESEARCH_HOURS','8'),
+    '--model', os.environ.get('AGENT_MODEL','claude-haiku-4-5-20251001')], check=True)
 """
 
 
@@ -146,6 +107,7 @@ def create_pod_config(
     training_config: str,
     hours: int,
     agent_model: str,
+    cloud_type: str = "COMMUNITY",
 ) -> dict:
     gpu = GPU_TYPES[gpu_type]
 
@@ -157,14 +119,24 @@ def create_pod_config(
     ]
 
     if mode == "autoresearch":
+        bootstrap_b64 = base64.b64encode(_AUTORESEARCH_BOOTSTRAP.encode()).decode()
         env += [
             {"key": "ANTHROPIC_API_KEY", "value": os.getenv("ANTHROPIC_API_KEY", "")},
             {"key": "RESEARCH_HOURS",    "value": str(hours)},
             {"key": "AGENT_MODEL",       "value": agent_model},
+            # Bootstrap + source files (decoded on the pod, no git clone needed)
+            {"key": "B",               "value": bootstrap_b64},
+            {"key": "FILE_PREPARE_PY", "value": _bundle_file("autoresearch/prepare.py")},
+            {"key": "FILE_RUN_PY",     "value": _bundle_file("autoresearch/run.py")},
+            {"key": "FILE_TRAIN_PY",   "value": _bundle_file("autoresearch/train.py")},
+            {"key": "FILE_PROGRAM_MD", "value": _bundle_file("autoresearch/program.md")},
         ]
+        docker_args = "python3 -c \"import base64,os;exec(base64.b64decode(os.environ['B']).decode())\""
+    else:
+        docker_args = ""
 
     return {
-        "cloudType":         "COMMUNITY",
+        "cloudType":         cloud_type,
         "gpuCount":          1,
         "volumeInGb":        50,
         "containerDiskInGb": 30,
@@ -176,7 +148,7 @@ def create_pod_config(
         "ports":             "8888/http,6006/http,22/tcp",
         "volumeMountPath":   "/workspace",
         "env":               env,
-        "startScript":       build_start_script(mode, model_name, training_config),
+        "dockerArgs":        docker_args,
     }
 
 
@@ -270,6 +242,8 @@ def main():
                         help="Deployment mode")
     parser.add_argument("--gpu",    choices=list(GPU_TYPES.keys()), default="RTX-4090",
                         help="GPU type")
+    parser.add_argument("--cloud",  choices=["COMMUNITY", "SECURE"], default="COMMUNITY",
+                        help="RunPod cloud type (SECURE has better availability, higher cost)")
     parser.add_argument("--hours",  type=int, default=8,
                         help="Run duration in hours")
     parser.add_argument("--model",  default="Qwen/Qwen2.5-1.5B-Instruct",
@@ -302,16 +276,21 @@ def main():
     print()
 
     config = create_pod_config(
-        args.gpu, args.mode, args.model, args.config, args.hours, args.agent_model
+        args.gpu, args.mode, args.model, args.config, args.hours, args.agent_model,
+        cloud_type=args.cloud
     )
 
     if args.dry_run:
         print("Dry run — pod config:")
-        config_display = {k: v for k, v in config.items() if k != "startScript"}
+        # Truncate large base64 env var values for readability
+        config_display = dict(config)
+        config_display["env"] = [
+            {**e, "value": e["value"][:40] + "…"} if len(e.get("value", "")) > 40 else e
+            for e in config_display.get("env", [])
+        ]
         print(json.dumps(config_display, indent=2))
         print()
-        print("Start script:")
-        print(config["startScript"])
+        print("dockerArgs:", config.get("dockerArgs", ""))
         return
 
     pod_id, host_id = deploy_to_runpod(config)
