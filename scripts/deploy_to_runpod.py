@@ -144,7 +144,7 @@ def create_pod_config(
         "minMemoryInGb":     16,
         "gpuTypeId":         gpu["id"],
         "name":              f"samskara-{mode}-{gpu_type.lower()}",
-        "imageName":         "runpod/pytorch:2.2.0-py3.10-cuda12.1-devel-ubuntu22.04",
+        "imageName":         "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
         "ports":             "8888/http,6006/http,22/tcp",
         "volumeMountPath":   "/workspace",
         "env":               env,
