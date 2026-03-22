@@ -1,0 +1,25 @@
+torch>=2.2.0
+transformers>=4.38.0
+accelerate>=0.27.0
+datasets>=2.17.0
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+pyyaml>=6.0
+tensorboard>=2.15.0
+wandb>=0.16.0
+tqdm>=4.66.0
+numpy>=1.24.0
+
+# Optional optimizations
+flash-attn>=2.5.0; sys_platform == 'linux'
+xformers>=0.0.23
+
+# Cloud deployment
+boto3>=1.34.0
+requests>=2.31.0
+
+# Development
+pytest>=8.0.0
+black>=24.0.0
+isort>=5.13.0
+mypy>=1.8.0
