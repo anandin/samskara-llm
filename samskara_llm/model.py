@@ -589,7 +589,8 @@ class SamskaraLLM(nn.Module):
     def _embed(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Placeholder - use pretrained embeddings in practice."""
         # This would be replaced with actual base model embeddings
-        return F.embedding(input_ids, self.lm_head.weight.t())
+        # lm_head.weight shape: [vocab_size, d_model] — correct for F.embedding
+        return F.embedding(input_ids, self.lm_head.weight)
 
 
 def create_samskara_llm(
