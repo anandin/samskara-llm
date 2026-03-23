@@ -22,6 +22,7 @@ Requirements:
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -112,6 +113,29 @@ def update_program_md(best_bpb: float, hypothesis: str, experiment: int):
     PROGRAM_MD.write_text(content)
 
 
+def sync_to_hub(hf_repo: str, experiment: int, best_bpb: float):
+    """Upload train.py, run_log.txt, program.md to HuggingFace Hub. Never raises."""
+    if not hf_repo:
+        return
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=os.environ.get("HF_TOKEN", ""))
+        api.create_repo(repo_id=hf_repo, repo_type="dataset", exist_ok=True, private=True)
+        commit_msg = f"Exp {experiment:03d}: val_bpb={best_bpb:.4f}"
+        for path in [TRAIN_PY, LOG_FILE, PROGRAM_MD]:
+            if path.exists():
+                api.upload_file(
+                    path_or_fileobj=str(path),
+                    path_in_repo=str(path),
+                    repo_id=hf_repo,
+                    repo_type="dataset",
+                    commit_message=commit_msg,
+                )
+        print(f"  [sync] → HF:{hf_repo}  ({commit_msg})")
+    except Exception as e:
+        print(f"  [sync] WARNING: upload failed — {e}")
+
+
 def ask_agent(client: anthropic.Anthropic, model: str, train_src: str, program_src: str) -> str:
     """Ask the LLM for a proposed diff."""
     user_msg = f"""## program.md
@@ -135,8 +159,10 @@ Propose ONE modification to reduce val_bpb. Output a unified diff then HYPOTHESI
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hours",  type=float, default=8.0,    help="How long to run (hours)")
-    parser.add_argument("--model",  default="claude-sonnet-4-6", help="Anthropic model ID")
+    parser.add_argument("--hours",      type=float, default=8.0,    help="How long to run (hours)")
+    parser.add_argument("--model",      default="claude-sonnet-4-6", help="Anthropic model ID")
+    parser.add_argument("--hf-repo",    default="",  help="HuggingFace repo for periodic sync (empty=disabled)")
+    parser.add_argument("--sync-every", type=int, default=10,   help="Sync to HF every N experiments")
     args = parser.parse_args()
 
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
@@ -218,12 +244,17 @@ def main():
             best_bpb = val_bpb
             update_program_md(best_bpb, hypothesis, experiment)
             print(f"  New best: {best_bpb:.4f} — keeping change")
+            sync_to_hub(args.hf_repo, experiment, best_bpb)
         else:
             revert_train_py(backup)
             print("  Reverting to previous train.py")
 
+        if experiment % args.sync_every == 0:
+            sync_to_hub(args.hf_repo, experiment, best_bpb)
+
     print(f"\n=== Done. Best val_bpb: {best_bpb:.4f} after {experiment} experiments ===")
     print(f"Log saved to {LOG_FILE}")
+    sync_to_hub(args.hf_repo, experiment, best_bpb)
 
 
 if __name__ == "__main__":

@@ -109,11 +109,15 @@ for path, key in [
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(base64.b64decode(os.environ[key]))
-subprocess.run([sys.executable,'-m','pip','install','datasets','tiktoken','anthropic','-q'], check=True)
+subprocess.run([sys.executable,'-m','pip','install','datasets','tiktoken','anthropic','huggingface_hub','-q'], check=True)
 subprocess.run([sys.executable,'autoresearch/prepare.py'], check=True)
-subprocess.run([sys.executable,'autoresearch/run.py',
+cmd = [sys.executable,'autoresearch/run.py',
     '--hours', os.environ.get('RESEARCH_HOURS','8'),
-    '--model', os.environ.get('AGENT_MODEL','claude-haiku-4-5-20251001')], check=True)
+    '--model', os.environ.get('AGENT_MODEL','claude-haiku-4-5-20251001')]
+hf_repo = os.environ.get('HF_AUTORESEARCH_REPO','')
+if hf_repo:
+    cmd += ['--hf-repo', hf_repo]
+subprocess.run(cmd, check=True)
 """
 
 
@@ -157,6 +161,7 @@ def create_pod_config(
     generate_source: str = "all",
     generate_model: str = "claude-haiku-4-5-20251001",
     hf_dataset_repo: str = "anandin/samskara-atman-data",
+    hf_autoresearch_repo: str = "anandin/samskara-autoresearch",
 ) -> dict:
     gpu = GPU_TYPES[gpu_type]
 
@@ -172,7 +177,8 @@ def create_pod_config(
         env += [
             {"key": "ANTHROPIC_API_KEY", "value": os.getenv("ANTHROPIC_API_KEY", "")},
             {"key": "RESEARCH_HOURS",    "value": str(hours)},
-            {"key": "AGENT_MODEL",       "value": agent_model},
+            {"key": "AGENT_MODEL",          "value": agent_model},
+            {"key": "HF_AUTORESEARCH_REPO", "value": hf_autoresearch_repo},
             # Bootstrap + source files (decoded on the pod, no git clone needed)
             {"key": "B",               "value": bootstrap_b64},
             {"key": "FILE_PREPARE_PY", "value": _bundle_file("autoresearch/prepare.py")},
@@ -330,6 +336,8 @@ def main():
                         help="Claude model for data generation (generate mode only)")
     parser.add_argument("--hf-repo", default="anandin/samskara-atman-data",
                         help="HuggingFace dataset repo for upload (generate mode only)")
+    parser.add_argument("--hf-autoresearch-repo", default="anandin/samskara-autoresearch",
+                        help="HuggingFace repo for periodic autoresearch sync (autoresearch mode only)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print config and cost estimate without deploying")
     args = parser.parse_args()
@@ -367,6 +375,7 @@ def main():
         generate_source=args.source,
         generate_model=args.generate_model,
         hf_dataset_repo=args.hf_repo,
+        hf_autoresearch_repo=args.hf_autoresearch_repo,
     )
 
     if args.dry_run:
