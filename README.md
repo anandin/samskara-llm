@@ -11,13 +11,20 @@ Input Tokens
     ↓
 [Chitta Encoder] → Differentiable retrieval from learned memory bank
     ↓
-[Manas Layers] → Fast, high-temp, associative, generates tagged signals
-    ↓  
-[Elevation Router] → Learns when to escalate (stability < threshold)
-    ↓ (if elevated)
-[Buddhi Layers] → Deep, low-temp, discriminating, option generation
+[Ahamkara] → Context-conditioned identity vector
     ↓
-[Synthesis Layer] → Resolves Manas/Buddhi divergence
+╔══ Iterative Dialogue (N=3 rounds) ════════════════════════════╗
+║  [Manas Layers] ← Chitta + Ahamkara + Dharma (every round)   ║
+║      ↕  (Buddhi's output feeds back into Manas each round)   ║
+║  [Buddhi Layers] → Option generation scored by Dharma         ║
+╚═══════════════════════════════════════════════════════════════╝
+    ↓
+[Elevation Router] → Measures degree of rational override (soft 0–1)
+                     High gate = Buddhi dominated; Low gate = Manas dominated
+    ↓
+[Soft Blend] → elevation_gate × Buddhi + (1−gate) × Manas
+    ↓
+[Synthesis Layer] → Resolves final Manas/Buddhi divergence
     ↓
 Output Tokens
 ```
@@ -136,7 +143,7 @@ samskara-llm/
 
 | Dimension | Metric | Target |
 |-----------|--------|--------|
-| ATMAN Fidelity | `elevation_accuracy` | >85% |
+| ATMAN Fidelity | `elevation_accuracy` — gate magnitude correlates with query complexity | >85% |
 | Chitta Quality | `seed_retrieval_precision` | >75% |
 | Divergence | `signal_preservation` | >90% |
 | Karma | `outcome_prediction_accuracy` | >65% |

@@ -524,51 +524,37 @@ class SamskaraLLM(nn.Module):
         # Identity adapts to the current query while retaining a stable baseline.
         ahamkara_vec = self.ahamkara(query_vec)  # [batch, d_model]
 
-        # 3. Manas processing (fast, associative)
-        manas_out, manas_signals = self.manas(
-            x, chitta_field, ahamkara_vec, self.dharma.mean(dim=0)
-        )
-        
-        # 4. Router decides elevation
-        manas_pooled = manas_out.mean(dim=1)  # [batch, d_model]
-        elevation_gate, stability = self.router(manas_pooled, manas_signals)
-        
-        # 5. Buddhi processing (if elevated)
-        # Use soft gate for training, hard for inference
-        if self.training:
-            # Soft elevation (differentiable)
+        # 3. Iterative Manas-Buddhi dialogue
+        N_ROUNDS = 3
+        manas_state = x
+        buddhi_state = None
+
+        for round_idx in range(N_ROUNDS):
+            buddhi_context = buddhi_state if buddhi_state is not None \
+                             else torch.zeros_like(manas_state)
+            manas_out, manas_signals = self.manas(
+                manas_state + buddhi_context,
+                chitta_field, ahamkara_vec, self.dharma.mean(dim=0)
+            )
             buddhi_out, all_options, dharma_scores = self.buddhi(
                 manas_out, manas_signals, chitta_field
             )
-            # Weighted by elevation gate
-            cognitive_out = elevation_gate.unsqueeze(-1) * buddhi_out + \
-                          (1 - elevation_gate.unsqueeze(-1)) * manas_pooled
-        else:
-            # Hard elevation for inference
-            elevate = elevation_gate > 0.5
-            if elevate.any():
-                buddhi_out, all_options, dharma_scores = self.buddhi(
-                    manas_out, manas_signals, chitta_field
-                )
-                cognitive_out = torch.where(
-                    elevate.unsqueeze(-1),
-                    buddhi_out,
-                    manas_pooled
-                )
-            else:
-                cognitive_out = manas_pooled
-                all_options = None
-                dharma_scores = None
-        
-        # 6. Synthesis (if divergence detected)
-        if self.training or (not self.training and elevation_gate.mean() > 0.5):
-            synthesis_out, divergence, manas_weight = self.synthesis(
-                manas_pooled, cognitive_out, manas_signals
-            )
-        else:
-            synthesis_out = cognitive_out
-            divergence = torch.zeros_like(elevation_gate)
-            manas_weight = torch.zeros_like(elevation_gate)
+            manas_state = manas_out
+            buddhi_state = buddhi_out.unsqueeze(1).expand_as(manas_out)
+
+        # 4. Router measures degree of elevation (after dialogue)
+        manas_pooled = manas_state.mean(dim=1)  # [batch, d_model]
+        buddhi_pooled = buddhi_out               # [batch, d_model]
+        elevation_gate, stability = self.router(manas_pooled, manas_signals)
+
+        # 5. Soft blend always — elevation_gate measures how much Buddhi dominated
+        cognitive_out = elevation_gate.unsqueeze(-1) * buddhi_pooled + \
+                        (1 - elevation_gate.unsqueeze(-1)) * manas_pooled
+
+        # 6. Synthesis resolves final divergence
+        synthesis_out, divergence, manas_weight = self.synthesis(
+            manas_pooled, cognitive_out, manas_signals
+        )
         
         # 7. Project to vocabulary
         logits = self.lm_head(synthesis_out)  # [batch, vocab_size]
