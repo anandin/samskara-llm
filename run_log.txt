@@ -1,0 +1,161 @@
+Baseline val_bpb: 0.7414
+
+Exp 001: val_bpb=0.7218  improved=True
+  hypothesis: Raising karma loss weight from 0.2 to 0.5 will strengthen Chitta's training signal to retrieve seeds correlated with outcome quality, directly improving the karma_corr dimension (20% of S3 score) and resulting in lower val_bpb.
+
+Exp 002: val_bpb=0.7168  improved=True
+  hypothesis: Lowering elevation_threshold from 0.6 to 0.5 will push the elevation rate closer to 20%, dramatically improving the efficiency dimension (15% weight) and boosting elevation_acc (25% weight) through better calibration of the sigmoid gate to binary targets, reducing val_bpb.
+
+Exp 004: val_bpb=0.7210  improved=False
+  hypothesis: Doubling the elevation loss weight from 0.5 to 1.0 will strengthen the ElevationRouter's training signal, directly improving elevation_accuracy (25% of S3) and maintaining efficiency near 20% (15% of S3), yielding a combined 40% score improvement that outweighs any minor side effects on generation quality.
+
+Exp 006: val_bpb=0.7225  improved=False
+  hypothesis: Raising karma loss weight from 0.5 to 1.2 will amplify the training signal for Chitta to retrieve seeds whose attention weights correlate with outcome quality, directly strengthening the karma_corr dimension (20% of S3) and improving overall val_bpb.
+
+Exp 009: val_bpb=0.7065  improved=True
+  hypothesis: Reducing chitta_top_k from 20 to 12 forces the Chitta attention mechanism to concentrate weight on fewer, higher-scoring seeds, increasing peak attention sharpness and directly improving retrieval_prec (25% of S3), which should reduce val_bpb.
+
+Exp 011: val_bpb=0.7129  improved=False
+  hypothesis: Increasing karma loss weight from 0.5 to 0.7 will strengthen Chitta's training signal to retrieve seeds with sharp attention peaks that correlate with positive outcomes, directly improving both retrieval_prec and karma_corr (45% of S3 total), thereby reducing val_bpb.
+
+Exp 014: val_bpb=0.7081  improved=False
+  hypothesis: Increasing karma loss weight from 0.5 to 0.8 will strengthen the training signal for Chitta to retrieve seeds correlated with outcome quality, directly improving karma_corr (20% of S3) and sharpening retrieval_prec as a beneficial side effect, thereby reducing val_bpb.
+
+Exp 015: val_bpb=0.7136  improved=False
+  hypothesis: Reducing d_model from 256 to 128 will allow more training iterations within the 5-minute wall-clock budget, enabling better convergence of the multi-task loss (generation, elevation, karma) and sharper Chitta attention patterns, thereby improving all five S3 dimensions and reducing val_bpb.
+
+Exp 018: val_bpb=0.7063  improved=True
+  hypothesis: Reducing chitta_top_k from 12 to 8 concentrates attention probability on fewer seeds, raising the peak attention weight metric and directly improving retrieval_prec (25% of S3 score), thereby lowering val_bpb.
+
+Exp 022: val_bpb=0.6988  improved=True
+  hypothesis: Increasing karma loss weight from 0.5 to 0.8 will strengthen Chitta's training signal to retrieve seeds correlated with outcome quality, directly improving the karma_corr dimension (20% of S3) and resulting in lower val_bpb.
+
+Exp 023: val_bpb=0.6978  improved=True
+  hypothesis: Increasing karma loss weight from 0.8 to 1.5 will strengthen Chitta's gradient signal to retrieve seeds with high attention weights correlated to outcome quality, directly improving karma_corr (20% of S3) and inducing sharper attention peaks that improve retrieval_prec (25%), resulting in lower val_bpb.
+
+Exp 031: val_bpb=0.6895  improved=True
+  hypothesis: Increasing elevation loss weight from 0.5 to 1.2 will strengthen the router's training signal, improving elevation_acc (25% of S3 score), the highest-leverage dimension, thereby reducing val_bpb.
+
+Exp 033: val_bpb=0.6939  improved=False
+  hypothesis: Reducing manas_layers from 2 to 1 will decrease model complexity and training time overhead, allowing more gradient updates within the 5-minute wall-clock limit and enabling the elevation gate to receive sharper, less-processed signals from the Chitta field, improving elevation_acc and karma_corr dimensions of S3.
+
+Exp 034: val_bpb=0.6740  improved=True
+  hypothesis: Reducing `chitta_top_k` from 8 to 4 concentrates attention weight over fewer seeds, producing sharper peak attention values (e.g., 0.25 vs 0.125), which directly increases retrieval_precision and raises the S3 score, lowering val_bpb by ~0.05–0.10.
+
+Exp 043: val_bpb=0.6904  improved=False
+  hypothesis: Raising karma loss weight from 1.5 to 2.5 will amplify the training signal for Chitta to learn attention patterns that correlate with outcome quality, directly improving the karma_corr dimension (20% of S3 score) and reducing val_bpb.
+
+Exp 046: val_bpb=0.6739  improved=True
+  hypothesis: Reducing manas_layers from 2 to 1 decreases Manas overfitting and allows Buddhi's focused reasoning to contribute more meaningfully to the soft blend, while lowering generation loss weight from 1.0 to 0.6 prioritizes elevation accuracy and karma correlation (which together comprise 45% of S3) over raw next-token prediction, directly improving val_bpb.
+
+Exp 052: val_bpb=0.6706  improved=True
+  hypothesis: Increasing n_heads from 4 to 8 will improve Chitta retrieval precision by allowing finer-grained multi-head attention patterns over the memory bank, creating sharper peak attention weights and directly boosting the retrieval_prec dimension (25% of S3).
+
+Exp 055: val_bpb=0.6769  improved=False
+  hypothesis: Lowering `elevation_threshold` to 0.35 will increase the elevation rate toward the 20% target, directly improving the efficiency dimension (15% weight) and reducing val_bpb.
+
+Exp 058: val_bpb=0.6706  improved=False
+  hypothesis: Lowering elevation_threshold from 0.5 to 0.4 will increase Buddhi escalation rate and improve elevation_acc (25% of S3), the highest-weighted dimension, by making the router's decision boundary more aggressive and moving efficiency closer to the 20% target rate.
+
+Exp 059: val_bpb=0.6758  improved=False
+  hypothesis: Increasing manas_temp from 1.5 to 2.0 will make Manas attend more broadly and associatively, improving its soft-gating behavior and allowing smoother gradient flow to the ElevationRouter during training, which should boost elevation_acc (25% of S3) and overall cognitive stability.
+
+Exp 060: val_bpb=0.6643  improved=True
+  hypothesis: Lowering elevation_threshold from 0.5 to 0.35 will increase the elevation rate toward the target 20%, directly improving the efficiency dimension (15% of S3 score) while maintaining reasonable elevation accuracy, resulting in lower val_bpb.
+
+Exp 061: val_bpb=0.6613  improved=True
+  hypothesis: Reducing n_heads from 8 to 4 (while keeping d_model=256) increases per-head dimension from 32 to 64, enabling each attention head to learn more specialized retrieval and routing patterns—this should sharpen Chitta's attention peaks (improving retrieval_prec by 15–25%) and stabilize the ElevationRouter's gate signal, directly boosting the two highest-weighted S3 dimensions (elevation_acc and retrieval_prec, 50% combined).
+
+Exp 063: val_bpb=0.6719  improved=False
+  hypothesis: Raising karma loss weight from 1.5 to 2.5 will strengthen Chitta's training signal to produce outcome-correlated seed attention patterns, directly improving the karma_corr dimension (20% of S3 score) and reducing val_bpb.
+
+Exp 065: val_bpb=0.6710  improved=False
+  hypothesis: Raising elevation_threshold from 0.35 to 0.50 will reduce over-escalation to Buddhi, moving the actual elevation rate closer to the optimal 20% target, improving the efficiency dimension (15% of S3) and lowering val_bpb.
+
+Exp 070: val_bpb=0.6732  improved=False
+  hypothesis: Raising elevation_threshold from 0.35 to 0.50 will force the ElevationRouter to be more selective (closer to the target 20% efficiency), improving both elevation accuracy (25% weight) and efficiency (15% weight) while reducing unnecessary computational overhead of over-escalation to Buddhi.
+
+Exp 081: val_bpb=0.6669  improved=False
+  hypothesis: Increasing karma loss weight from 1.5 to 2.0 will strengthen Chitta's training signal to retrieve seeds that correlate with outcome quality (improving karma_corr, 20% of S3), while adding an extra Manas layer will improve elevation accuracy by processing context more deeply before the routing decision, jointly reducing val_bpb.
+
+Exp 085: val_bpb=0.6808  improved=False
+  hypothesis: Raising elevation loss weight to 2.0 will strengthen gradient flow to the ElevationRouter, improving elevation_acc (the 25%-weighted dimension) and reducing overall val_bpb.
+
+Exp 090: val_bpb=0.6761  improved=False
+  hypothesis: Raising elevation_threshold from 0.35 to 0.50 (true binary boundary) makes the router's escalation decisions crisper and more selective, helping maintain the target 20% escalation rate and preventing efficiency collapse; lowering manas_temp from 1.5 to 1.2 sharpens Manas outputs, improving elevation accuracy without destabilizing the system.
+
+Exp 093: val_bpb=0.6722  improved=False
+  hypothesis: Raising elevation_threshold from 0.35 to 0.55 will shift the router's decision boundary rightward, reducing the elevation rate from ~50% to the target ~20%, which directly improves the efficiency dimension (15% of S3 score) and reduces val_bpb.
+
+Exp 094: val_bpb=0.6611  improved=True
+  hypothesis: Reducing d_model from 256 to 128 will lower parameter count and enable more effective gradient flow through the Chitta→Manas→ElevationRouter pathway within the 5-minute wall-clock budget, allowing the model to converge to a better optimum and improve all five S3 dimensions, particularly elevation_acc and karma_corr.
+
+Exp 096: val_bpb=0.6769  improved=False
+  hypothesis: Raising `elevation_threshold` from 0.35 to 0.50 reduces over-escalation, pushing the elevation rate closer to the target 20%, which directly improves the efficiency dimension (15% of S3) and reduces wasted computation on unnecessary Buddhi inference, lowering overall val_bpb.
+
+Exp 100: val_bpb=0.6710  improved=False
+  hypothesis: Upgrading Chitta's query projection from a single linear layer to a 2-layer MLP with ReLU nonlinearity will enable richer query feature learning, sharpening attention peaks (improving retrieval_prec) and strengthening the correlation between retrieved seeds and outcomes (improving karma_corr), thereby reducing val_bpb.
+
+Exp 102: val_bpb=0.6846  improved=False
+  hypothesis: Increasing manas_layers to 2 deepens Manas' processing capacity for better elevation discrimination; reducing generation loss from 0.6 to 0.5 and raising karma loss from 1.5 to 2.0 shifts focus toward training Chitta to retrieve seeds that correlate with outcome quality, directly strengthening the karma_corr dimension (20% of S3) and improving overall elevation accuracy.
+
+Exp 104: val_bpb=0.6710  improved=False
+  hypothesis: Reducing Buddhi depth from 3→2 layers and rebalancing loss weights to emphasize karma (2.2) over elevation (1.0) will strengthen Chitta's training signal to retrieve outcome-correlated seeds, directly improving karma_corr (20% of S3) while maintaining elevation accuracy, resulting in lower val_bpb.
+
+Exp 105: val_bpb=0.6710  improved=False
+  hypothesis: Increasing manas_layers from 1 to 2 will deepen Manas' associative processing, allowing better integration of the Chitta memory field and more refined elevation gating before the router decision, thereby improving elevation_acc (25% of S3) and reducing val_bpb.
+
+Exp 108: val_bpb=0.7113  improved=False
+  hypothesis: Increasing `chitta_top_k` from 4 to 8 will enable sharper attention peaks on relevant seeds (improving retrieval_prec by ~25%) and provide richer signal variance for karma_corr training, combining to reduce val_bpb by ~0.05–0.08.
+
+Exp 110: val_bpb=0.6790  improved=False
+  hypothesis: Increasing manas_layers from 1 to 2 will deepen the fast-path's representational capacity to better integrate the Chitta field signal and make more reliable elevation decisions, directly improving elevation_acc (25% weight) while maintaining the 5-minute training constraint.
+
+Exp 112: val_bpb=0.6727  improved=False
+  hypothesis: Increasing karma loss weight from 1.5 to 2.0 and manas_layers from 1 to 2 will strengthen Chitta's retrieval training signal while giving Manas more capacity to process the memory field, directly improving karma_corr (20% of S3) and elevation_acc (25% of S3) without exceeding the 5-minute training window.
+
+Exp 118: val_bpb=0.6888  improved=False
+  hypothesis: Lowering `buddhi_temp` from 0.3 to 0.15 will sharpen Buddhi's attention distribution, making it more discriminative when processing hard queries that cross the elevation threshold—this should improve the elevation_acc dimension (25% of S3 score) by allowing Buddhi to commit more confidently to correct routing decisions.
+
+Exp 121: val_bpb=0.6744  improved=False
+  hypothesis: Raising karma loss weight from 1.5 to 2.5 will strengthen the training signal for Chitta to retrieve outcome-predictive seeds, directly improving karma_corr (20% of S3 score) and secondarily improving retrieval_prec via sharper attention concentration.
+
+Exp 122: val_bpb=0.6717  improved=False
+  hypothesis: Increasing manas_layers from 1→2 improves the fast-path's ability to extract and refine query representations before routing, while raising karma loss from 1.5→2.0 strengthens Chitta's training signal to retrieve seeds correlated with outcome quality, jointly addressing both elevation_accuracy (better Manas features) and karma_corr (25% + 20% = 45% of S3 score).
+
+Exp 126: val_bpb=0.6741  improved=False
+  hypothesis: Lowering elevation_threshold from 0.35 to 0.25 will increase the router's willingness to escalate queries to the focused Buddhi module, improving elevation_acc (25% of S3) by making the threshold better calibrated to the learned gate distribution, while the efficiency metric's 0.2 target provides natural regulation against over-escalation.
+
+Exp 133: val_bpb=0.6753  improved=False
+  hypothesis: Increasing d_model from 128 to 256 (with n_heads=4 still dividing evenly) will improve the model's representational capacity, allowing the Chitta memory bank to encode richer query embeddings and retrieve more discriminative seeds, directly strengthening retrieval_prec (25% weight) and enabling sharper karma_corr training signals (20% weight), while staying well within the 5-minute training budget.
+
+Exp 135: val_bpb=0.7058  improved=False
+  hypothesis: Increasing chitta_top_k from 4 to 8 improves gradient flow to Chitta during early training and supports more robust karma correlation learning, boosting both retrieval_prec (25%) and karma_corr (20%) dimensions without causing attention collapse.
+
+Exp 136: val_bpb=0.6703  improved=False
+  hypothesis: Increasing karma loss weight from 1.5 to 2.0 will strengthen Chitta's training signal to retrieve seeds that correlate with outcome quality (directly improving the 20%-weighted karma_corr dimension), while reducing Buddhi depth from 3 to 2 layers frees compute to iterate more efficiently within the 5-minute window, allowing the model to better optimize for the S3 composite score and reduce val_bpb.
+
+Exp 138: val_bpb=0.6847  improved=False
+  hypothesis: Increasing karma loss weight from 1.5 to 2.2 will strengthen Chitta's training signal to retrieve seeds highly correlated with outcome quality, directly improving karma_corr (20%) and retrieval_prec (25%) dimensions which together comprise 45% of S3 score, thus lowering val_bpb.
+
+Exp 139: val_bpb=0.6735  improved=False
+  hypothesis: Lowering elevation_threshold from 0.35 to 0.25 will increase the frequency of Buddhi escalation during training, sharpening the ElevationRouter's discrimination ability and improving elevation_acc (25% of S3 score), thereby reducing val_bpb.
+
+Exp 140: val_bpb=0.6878  improved=False
+  hypothesis: Doubling n_seeds from 500 to 1000 and raising elevation_threshold from 0.35 to 0.45 will improve retrieval_prec (more diverse seeds → sharper attention to relevant ones) and efficiency (higher gate threshold pushes escalation rate closer to 20%), directly boosting the S3 score and reducing val_bpb.
+
+Exp 141: val_bpb=0.6783  improved=False
+  hypothesis: Lowering `manas_temp` from 1.5 to 1.0 sharpens Manas' attention patterns, providing the elevation router with clearer input signals to improve elevation_acc (25% of S3 score), the highest-leverage dimension for reducing val_bpb.
+
+Exp 142: val_bpb=0.6703  improved=False
+  hypothesis: Raising elevation_threshold from 0.35 to 0.50 will reduce the gate's tendency to over-escalate, bringing the elevation rate closer to the optimal 20%, which improves both efficiency (15%) and stability (15%) metrics while maintaining elevation accuracy, resulting in lower val_bpb.
+
+Exp 144: val_bpb=0.6675  improved=False
+  hypothesis: Increasing Manas depth from 1 to 2 layers improves the fast-path feature extraction and elevation gate decision quality, directly boosting elevation_acc (25% of S3 score) and enabling sharper query-to-seed correlation in Chitta, thereby reducing val_bpb.
+
+Exp 146: val_bpb=0.6640  improved=False
+  hypothesis: Reducing n_heads from 4 to 2 will decrease attention head dimensionality (64→64 per head), forcing each head to specialize more sharply on distinct semantic features rather than fragmenting capacity, which should improve both retrieval_prec (sharper Chitta memory access) and stability (more coherent internal representations), directly lowering val_bpb.
+
+Exp 151: val_bpb=0.6644  improved=False
+  hypothesis: Raising elevation_threshold from 0.35 to 0.5 will calibrate the ElevationRouter to escalate ~20% of queries, directly optimizing the efficiency dimension (15% of S3) and improving elevation accuracy by reducing gate saturation, thereby lowering val_bpb.
+
