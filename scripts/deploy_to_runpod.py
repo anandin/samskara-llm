@@ -2,9 +2,10 @@
 """
 Deploy Samskara-LLM to RunPod GPU cloud.
 
-Two modes:
+Three modes:
   --mode train        Full training run (Qwen/Llama base + Samskara layers)
   --mode autoresearch Karpathy-style overnight agent research loop
+  --mode generate     Synthetic ATMAN data generation + upload to HuggingFace Hub
 
 Usage:
     # Dry-run cost estimate (no API calls)
@@ -13,6 +14,10 @@ Usage:
     # Deploy autoresearch overnight (~$4-6 total)
     RUNPOD_API_KEY=xxx ANTHROPIC_API_KEY=sk-ant-xxx \\
         python scripts/deploy_to_runpod.py --gpu RTX-4090 --mode autoresearch --hours 8
+
+    # Generate 500 ATMAN records and upload to HuggingFace (~$2 total, ~30 min)
+    RUNPOD_API_KEY=xxx ANTHROPIC_API_KEY=sk-ant-xxx HF_TOKEN=xxx \\
+        python scripts/deploy_to_runpod.py --mode generate --n 500
 
     # Deploy full training (existing behavior)
     RUNPOD_API_KEY=xxx HF_TOKEN=xxx \\
@@ -48,6 +53,10 @@ CLAUDE_COSTS = {
     "claude-sonnet-4-6":         {"input": 3.00,  "output": 15.00},
 }
 
+# ATMAN data gen: ~150 input tokens + ~800 output tokens per record
+_ATMAN_INPUT_TOKENS  = 150
+_ATMAN_OUTPUT_TOKENS = 800
+
 REPO_URL = "https://github.com/anandin/samskara-llm.git"
 
 # Project root (one level up from scripts/)
@@ -59,7 +68,8 @@ def _bundle_file(rel_path: str) -> str:
     return base64.b64encode((_PROJECT_ROOT / rel_path).read_bytes()).decode()
 
 
-def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str) -> dict:
+def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str,
+                   generate_n: int = 500, generate_model: str = "claude-haiku-4-5-20251001") -> dict:
     gpu = GPU_TYPES[gpu_type]
     gpu_cost = gpu["price_per_hr"] * hours
 
@@ -69,12 +79,19 @@ def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str) -> di
         # Each experiment: ~4100 input tokens, ~800 output tokens
         rates = CLAUDE_COSTS.get(agent_model, CLAUDE_COSTS["claude-haiku-4-5-20251001"])
         api_cost = experiments * (4100 * rates["input"] + 800 * rates["output"]) / 1_000_000
+    elif mode == "generate":
+        rates = CLAUDE_COSTS.get(generate_model, CLAUDE_COSTS["claude-haiku-4-5-20251001"])
+        api_cost = generate_n * (
+            _ATMAN_INPUT_TOKENS  * rates["input"] +
+            _ATMAN_OUTPUT_TOKENS * rates["output"]
+        ) / 1_000_000
 
     return {
         "gpu_cost": gpu_cost,
         "api_cost": api_cost,
         "total": gpu_cost + api_cost,
         "experiments": (hours * 60) // 5 if mode == "autoresearch" else None,
+        "records": generate_n if mode == "generate" else None,
     }
 
 
@@ -100,6 +117,34 @@ subprocess.run([sys.executable,'autoresearch/run.py',
 """
 
 
+_GENERATE_BOOTSTRAP = """\
+import base64, os, pathlib, subprocess, sys
+os.chdir('/workspace')
+p = pathlib.Path('scripts/generate_atman_data.py')
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_bytes(base64.b64decode(os.environ['FILE_GENERATE_PY']))
+subprocess.run([sys.executable,'-m','pip','install',
+    'anthropic','datasets','huggingface_hub','-q'], check=True)
+n      = os.environ.get('GENERATE_N',     '500')
+source = os.environ.get('GENERATE_SRC',  'all')
+model  = os.environ.get('GENERATE_MODEL','claude-haiku-4-5-20251001')
+subprocess.run([sys.executable,'scripts/generate_atman_data.py',
+    '--n', n, '--source', source, '--model', model], check=True)
+data_file = pathlib.Path('data/training/train.jsonl')
+if data_file.exists():
+    from huggingface_hub import HfApi
+    api  = HfApi(token=os.environ.get('HF_TOKEN',''))
+    repo = os.environ.get('HF_DATASET_REPO','anandin/samskara-atman-data')
+    api.create_repo(repo_id=repo, repo_type='dataset', exist_ok=True, private=True)
+    api.upload_file(path_or_fileobj=str(data_file), path_in_repo='train.jsonl',
+                    repo_id=repo, repo_type='dataset')
+    print(f'Uploaded {data_file.stat().st_size//1024}KB to HuggingFace: {repo}')
+else:
+    print('ERROR: data/training/train.jsonl not found — generation may have failed.')
+    sys.exit(1)
+"""
+
+
 def create_pod_config(
     gpu_type: str,
     mode: str,
@@ -108,6 +153,10 @@ def create_pod_config(
     hours: int,
     agent_model: str,
     cloud_type: str = "COMMUNITY",
+    generate_n: int = 500,
+    generate_source: str = "all",
+    generate_model: str = "claude-haiku-4-5-20251001",
+    hf_dataset_repo: str = "anandin/samskara-atman-data",
 ) -> dict:
     gpu = GPU_TYPES[gpu_type]
 
@@ -132,6 +181,20 @@ def create_pod_config(
             {"key": "FILE_PROGRAM_MD", "value": _bundle_file("autoresearch/program.md")},
         ]
         docker_args = "python3 -c \"import base64,os;exec(base64.b64decode(os.environ['B']).decode())\""
+
+    elif mode == "generate":
+        bootstrap_b64 = base64.b64encode(_GENERATE_BOOTSTRAP.encode()).decode()
+        env += [
+            {"key": "ANTHROPIC_API_KEY", "value": os.getenv("ANTHROPIC_API_KEY", "")},
+            {"key": "GENERATE_N",        "value": str(generate_n)},
+            {"key": "GENERATE_SRC",      "value": generate_source},
+            {"key": "GENERATE_MODEL",    "value": generate_model},
+            {"key": "HF_DATASET_REPO",   "value": hf_dataset_repo},
+            {"key": "B",                 "value": bootstrap_b64},
+            {"key": "FILE_GENERATE_PY",  "value": _bundle_file("scripts/generate_atman_data.py")},
+        ]
+        docker_args = "python3 -c \"import base64,os;exec(base64.b64decode(os.environ['B']).decode())\""
+
     else:
         docker_args = ""
 
@@ -212,14 +275,17 @@ def apply_phase_defaults(args):
     }
 
     if args.phase == 2:
-        print("Phase 2 — synthetic data generation.")
-        print("This only needs the Anthropic API, not a GPU pod.")
+        # Apply phase 2 defaults if user hasn't overridden them
+        if getattr(args, 'mode') == parser.get_default('mode'):
+            args.mode = "generate"
+        if getattr(args, 'gpu') == parser.get_default('gpu'):
+            args.gpu = "RTX-4090"
+        if getattr(args, 'hours') == parser.get_default('hours'):
+            args.hours = 2
+        if not hasattr(args, 'n') or args.n == parser.get_default('n'):
+            args.n = 500
+        print("Phase 2 — ATMAN synthetic data generation → HuggingFace Hub upload")
         print()
-        print("Run locally or on any machine with ANTHROPIC_API_KEY set:")
-        print("  python scripts/generate_atman_data.py --n 1000 --source all")
-        print()
-        print("Cost: ~$2.80 (Haiku, 1000 records)")
-        sys.exit(0)
 
     defaults = phase_defaults.get(args.phase, {})
     for key, val in defaults.items():
@@ -236,9 +302,10 @@ def main():
     global parser
     parser = argparse.ArgumentParser(description="Deploy Samskara-LLM to RunPod")
     parser.add_argument("--phase",  type=int, choices=[1, 2, 3], default=None,
-                        help="Budget phase shortcut: 1=autoresearch RTX4090 8h, "
-                             "2=data gen (CPU, prints command), 3=full train A100 24h")
-    parser.add_argument("--mode",   choices=["train", "autoresearch"], default="autoresearch",
+                        help="Budget phase shortcut: 1=autoresearch RTX4090 8h (~$5), "
+                             "2=ATMAN data gen RTX4090 2h 500 records (~$2), "
+                             "3=full train A100 24h (~$60)")
+    parser.add_argument("--mode",   choices=["train", "autoresearch", "generate"], default="autoresearch",
                         help="Deployment mode")
     parser.add_argument("--gpu",    choices=list(GPU_TYPES.keys()), default="RTX-4090",
                         help="GPU type")
@@ -253,6 +320,16 @@ def main():
     parser.add_argument("--agent-model", default="claude-haiku-4-5-20251001",
                         choices=list(CLAUDE_COSTS.keys()),
                         help="Claude model for autoresearch agent (autoresearch mode only)")
+    parser.add_argument("--n",      type=int, default=500,
+                        help="Number of ATMAN records to generate (generate mode only)")
+    parser.add_argument("--source", default="all",
+                        choices=["gsm8k", "ethics", "hotpotqa", "all"],
+                        help="Seed query source dataset (generate mode only)")
+    parser.add_argument("--generate-model", default="claude-haiku-4-5-20251001",
+                        choices=list(CLAUDE_COSTS.keys()),
+                        help="Claude model for data generation (generate mode only)")
+    parser.add_argument("--hf-repo", default="anandin/samskara-atman-data",
+                        help="HuggingFace dataset repo for upload (generate mode only)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print config and cost estimate without deploying")
     args = parser.parse_args()
@@ -260,7 +337,10 @@ def main():
     apply_phase_defaults(args)
 
     gpu = GPU_TYPES[args.gpu]
-    costs = estimate_costs(args.gpu, args.hours, args.mode, args.agent_model)
+    costs = estimate_costs(
+        args.gpu, args.hours, args.mode, args.agent_model,
+        generate_n=args.n, generate_model=args.generate_model,
+    )
 
     print(f"Mode:  {args.mode}")
     print(f"GPU:   {args.gpu}  ({gpu['vram']}GB VRAM)  ${gpu['price_per_hr']:.2f}/hr")
@@ -268,16 +348,25 @@ def main():
     if args.mode == "autoresearch":
         print(f"Agent: {args.agent_model}")
         print(f"       ~{costs['experiments']} experiments")
+    elif args.mode == "generate":
+        print(f"Model: {args.generate_model}")
+        print(f"       {args.n} records  source={args.source}")
+        print(f"       Upload → HF: {args.hf_repo}")
     print()
     print(f"  GPU cost:   ${costs['gpu_cost']:.2f}")
-    if args.mode == "autoresearch":
-        print(f"  API cost:   ${costs['api_cost']:.2f}  (Claude {args.agent_model})")
+    if args.mode in ("autoresearch", "generate"):
+        model_label = args.agent_model if args.mode == "autoresearch" else args.generate_model
+        print(f"  API cost:   ${costs['api_cost']:.2f}  (Claude {model_label})")
     print(f"  TOTAL:      ${costs['total']:.2f}")
     print()
 
     config = create_pod_config(
         args.gpu, args.mode, args.model, args.config, args.hours, args.agent_model,
-        cloud_type=args.cloud
+        cloud_type=args.cloud,
+        generate_n=args.n,
+        generate_source=args.source,
+        generate_model=args.generate_model,
+        hf_dataset_repo=args.hf_repo,
     )
 
     if args.dry_run:
@@ -303,6 +392,9 @@ def main():
     if args.mode == "autoresearch":
         print(f"Results will be in autoresearch/run_log.txt on the pod.")
         print(f"SSH in to retrieve: runpodctl exec {pod_id} -- cat autoresearch/run_log.txt")
+    elif args.mode == "generate":
+        print(f"Data will be uploaded to HuggingFace: {args.hf_repo}")
+        print(f"Monitor pod logs: runpodctl logs {pod_id}")
 
 
 if __name__ == "__main__":
