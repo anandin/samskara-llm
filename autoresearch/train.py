@@ -27,21 +27,21 @@ from torch.utils.data import DataLoader, Dataset
 
 # ── HYPERPARAMETERS (agent modifies this section) ────────────────────────────
 n_seeds            = 500       # Chitta memory bank size
-d_model            = 256       # Model dimension (keep small for 5-min runs)
-manas_layers       = 2         # Manas transformer depth
+d_model            = 128       # Model dimension (keep small for 5-min runs)
+manas_layers       = 1         # Manas transformer depth
 buddhi_layers      = 3         # Buddhi transformer depth
 n_heads            = 4         # Attention heads (d_model must be divisible)
 manas_temp         = 1.5       # High temperature = associative/loose
 buddhi_temp        = 0.3       # Low temperature = focused/grounded
-chitta_top_k       = 20        # Seeds retrieved per query
-elevation_threshold = 0.6      # Escalate to Buddhi above this gate value
+chitta_top_k       = 4         # Seeds retrieved per query
+elevation_threshold = 0.35     # Escalate to Buddhi above this gate value
 n_dharma_rules     = 10        # Ethical constraint dimensions
 n_options          = 2         # Buddhi generates N candidate options
 synthesis_threshold = 0.5      # Trigger synthesis if divergence > this
 loss_weights = {               # Multi-task loss weights
-    "generation": 1.0,
-    "elevation":  0.5,
-    "karma":      0.2,
+    "generation": 0.6,
+    "elevation":  1.2,
+    "karma":      1.5,
 }
 batch_size  = 16
 lr          = 3e-4
