@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -134,18 +135,45 @@ def generate_record(client: anthropic.Anthropic, query: str, model: str) -> dict
         return None
 
 
+def upload_to_hf(hf_repo: str, hf_token: str, label: str = "") -> None:
+    """Upload the current train.jsonl to HuggingFace Hub."""
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=hf_token)
+        api.create_repo(repo_id=hf_repo, repo_type="dataset", exist_ok=True, private=True)
+        api.upload_file(
+            path_or_fileobj=str(OUTPUT_FILE),
+            path_in_repo="train.jsonl",
+            repo_id=hf_repo,
+            repo_type="dataset",
+        )
+        size_kb = OUTPUT_FILE.stat().st_size // 1024
+        print(f"  [HF checkpoint{' ' + label if label else ''}] {size_kb}KB → {hf_repo}")
+    except Exception as e:
+        print(f"  [HF upload failed{' ' + label if label else ''}] {e}")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n",      type=int, default=200,
+    parser.add_argument("--n",           type=int, default=200,
                         help="Number of records to generate")
-    parser.add_argument("--source", default="all",
+    parser.add_argument("--source",      default="all",
                         choices=["gsm8k", "ethics", "hotpotqa", "all"],
                         help="Source dataset for seed queries")
-    parser.add_argument("--model",  default="claude-haiku-4-5-20251001",
+    parser.add_argument("--model",       default="claude-haiku-4-5-20251001",
                         help="Anthropic model (Haiku is fast and cheap for data gen)")
-    parser.add_argument("--sleep",  type=float, default=0.5,
+    parser.add_argument("--sleep",       type=float, default=0.5,
                         help="Seconds to sleep between API calls (rate limiting)")
+    parser.add_argument("--hf-repo",     default=os.getenv("HF_DATASET_REPO", ""),
+                        help="HuggingFace dataset repo for periodic checkpoints (e.g. anandin/samskara-atman-data)")
+    parser.add_argument("--upload-every", type=int, default=int(os.getenv("HF_UPLOAD_EVERY", "50")),
+                        help="Upload checkpoint to HF every N generated records (0 = only at end)")
     args = parser.parse_args()
+
+    hf_token = os.getenv("HF_TOKEN", "")
+    do_hf = bool(args.hf_repo and hf_token)
+    if args.hf_repo and not hf_token:
+        print("Warning: --hf-repo set but HF_TOKEN not found; checkpoints will be skipped.")
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     client = anthropic.Anthropic()    # reads ANTHROPIC_API_KEY from env
@@ -153,9 +181,13 @@ def main():
     print(f"Fetching {args.n} seed queries from: {args.source}")
     queries = fetch_queries(args.source, args.n)
     print(f"Got {len(queries)} queries. Generating ATMAN annotations...\n")
+    if do_hf:
+        freq = args.upload_every if args.upload_every > 0 else args.n
+        print(f"HF checkpoints → {args.hf_repo}  (every {freq} records)\n")
 
     generated = 0
     skipped   = 0
+    last_upload_at = 0
 
     with open(OUTPUT_FILE, "a") as out_f:
         for i, query in enumerate(queries):
@@ -166,6 +198,11 @@ def main():
                 generated += 1
                 if generated % 10 == 0:
                     print(f"  [{generated}/{args.n}] generated  ({skipped} skipped)")
+                # Periodic HF checkpoint
+                if do_hf and args.upload_every > 0 and generated - last_upload_at >= args.upload_every:
+                    out_f.flush()
+                    upload_to_hf(args.hf_repo, hf_token, label=f"@{generated}")
+                    last_upload_at = generated
             else:
                 skipped += 1
 
@@ -177,6 +214,11 @@ def main():
 
     print(f"\nDone. Generated {generated} records ({skipped} skipped).")
     print(f"Output: {OUTPUT_FILE}")
+
+    # Final upload (always, if configured)
+    if do_hf and generated > last_upload_at:
+        upload_to_hf(args.hf_repo, hf_token, label="final")
+
     print(f"\nTo train with this data:")
     print(f"  python training/train.py --config configs/poc.yaml --data-dir data/training/")
 

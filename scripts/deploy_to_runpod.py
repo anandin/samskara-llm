@@ -129,23 +129,20 @@ p.parent.mkdir(parents=True, exist_ok=True)
 p.write_bytes(base64.b64decode(os.environ['FILE_GENERATE_PY']))
 subprocess.run([sys.executable,'-m','pip','install',
     'anthropic','datasets','huggingface_hub','-q'], check=True)
-n      = os.environ.get('GENERATE_N',     '500')
-source = os.environ.get('GENERATE_SRC',  'all')
-model  = os.environ.get('GENERATE_MODEL','claude-haiku-4-5-20251001')
-subprocess.run([sys.executable,'scripts/generate_atman_data.py',
-    '--n', n, '--source', source, '--model', model], check=True)
-data_file = pathlib.Path('data/training/train.jsonl')
-if data_file.exists():
-    from huggingface_hub import HfApi
-    api  = HfApi(token=os.environ.get('HF_TOKEN',''))
-    repo = os.environ.get('HF_DATASET_REPO','anandin/samskara-atman-data')
-    api.create_repo(repo_id=repo, repo_type='dataset', exist_ok=True, private=True)
-    api.upload_file(path_or_fileobj=str(data_file), path_in_repo='train.jsonl',
-                    repo_id=repo, repo_type='dataset')
-    print(f'Uploaded {data_file.stat().st_size//1024}KB to HuggingFace: {repo}')
-else:
-    print('ERROR: data/training/train.jsonl not found — generation may have failed.')
-    sys.exit(1)
+n            = os.environ.get('GENERATE_N',          '500')
+source       = os.environ.get('GENERATE_SRC',        'all')
+model        = os.environ.get('GENERATE_MODEL',      'claude-haiku-4-5-20251001')
+hf_repo      = os.environ.get('HF_DATASET_REPO',     'anandin/samskara-atman-data')
+upload_every = os.environ.get('HF_UPLOAD_EVERY',     '50')
+cmd = [sys.executable,'scripts/generate_atman_data.py',
+    '--n', n, '--source', source, '--model', model,
+    '--upload-every', upload_every]
+if hf_repo:
+    cmd += ['--hf-repo', hf_repo]
+result = subprocess.run(cmd)
+if result.returncode != 0:
+    print('ERROR: generate_atman_data.py exited with error.')
+    sys.exit(result.returncode)
 """
 
 
@@ -160,6 +157,7 @@ def create_pod_config(
     generate_n: int = 500,
     generate_source: str = "all",
     generate_model: str = "claude-haiku-4-5-20251001",
+    generate_upload_every: int = 50,
     hf_dataset_repo: str = "anandin/samskara-atman-data",
     hf_autoresearch_repo: str = "anandin/samskara-autoresearch",
 ) -> dict:
@@ -196,6 +194,7 @@ def create_pod_config(
             {"key": "GENERATE_SRC",      "value": generate_source},
             {"key": "GENERATE_MODEL",    "value": generate_model},
             {"key": "HF_DATASET_REPO",   "value": hf_dataset_repo},
+            {"key": "HF_UPLOAD_EVERY",   "value": str(generate_upload_every)},
             {"key": "B",                 "value": bootstrap_b64},
             {"key": "FILE_GENERATE_PY",  "value": _bundle_file("scripts/generate_atman_data.py")},
         ]
@@ -336,6 +335,8 @@ def main():
                         help="Claude model for data generation (generate mode only)")
     parser.add_argument("--hf-repo", default="anandin/samskara-atman-data",
                         help="HuggingFace dataset repo for upload (generate mode only)")
+    parser.add_argument("--upload-every", type=int, default=50,
+                        help="Checkpoint to HF every N records during generation (0 = only at end)")
     parser.add_argument("--hf-autoresearch-repo", default="anandin/samskara-autoresearch",
                         help="HuggingFace repo for periodic autoresearch sync (autoresearch mode only)")
     parser.add_argument("--dry-run", action="store_true",
@@ -374,6 +375,7 @@ def main():
         generate_n=args.n,
         generate_source=args.source,
         generate_model=args.generate_model,
+        generate_upload_every=args.upload_every,
         hf_dataset_repo=args.hf_repo,
         hf_autoresearch_repo=args.hf_autoresearch_repo,
     )
