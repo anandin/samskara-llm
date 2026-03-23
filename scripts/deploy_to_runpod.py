@@ -100,6 +100,10 @@ def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str,
 _AUTORESEARCH_BOOTSTRAP = """\
 import base64, os, pathlib, subprocess, sys
 os.chdir('/workspace')
+# train.py and program.md are mutated by the autoresearch loop;
+# skip writing them if they already exist so pod restarts don't
+# wipe accumulated research progress.
+_mutable = {'autoresearch/train.py', 'autoresearch/program.md'}
 for path, key in [
     ('autoresearch/prepare.py', 'FILE_PREPARE_PY'),
     ('autoresearch/run.py',     'FILE_RUN_PY'),
@@ -108,7 +112,8 @@ for path, key in [
 ]:
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(base64.b64decode(os.environ[key]))
+    if path not in _mutable or not p.exists():
+        p.write_bytes(base64.b64decode(os.environ[key]))
 subprocess.run([sys.executable,'-m','pip','install','datasets','tiktoken','anthropic','huggingface_hub','-q'], check=True)
 subprocess.run([sys.executable,'autoresearch/prepare.py'], check=True)
 cmd = [sys.executable,'autoresearch/run.py',
