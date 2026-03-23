@@ -211,8 +211,8 @@ class ManasLayer(nn.Module):
         chitta_context = chitta_field.mean(dim=1, keepdim=True)  # [batch, 1, d_model]
         x = x + chitta_context
         
-        # Add Ahamkara (identity) as bias
-        x = x + ahamkara_bias.view(1, 1, -1)
+        # Add Ahamkara (identity) as bias — unsqueeze so [batch, d_model] → [batch, 1, d_model]
+        x = x + ahamkara_bias.unsqueeze(1)
         
         # Add Dharma as attention mask (handled in transformer)
         x = x + dharma_bias.view(1, 1, -1)
@@ -543,9 +543,10 @@ class SamskaraLLM(nn.Module):
             buddhi_state = buddhi_out.unsqueeze(1).expand_as(manas_out)
 
         # 4. Router measures degree of elevation (after dialogue)
+        # router expects full [batch, seq, d_model] and pools internally
         manas_pooled = manas_state.mean(dim=1)  # [batch, d_model]
         buddhi_pooled = buddhi_out               # [batch, d_model]
-        elevation_gate, stability = self.router(manas_pooled, manas_signals)
+        elevation_gate, stability = self.router(manas_state, manas_signals)
 
         # 5. Soft blend always — elevation_gate measures how much Buddhi dominated
         cognitive_out = elevation_gate.unsqueeze(-1) * buddhi_pooled + \
