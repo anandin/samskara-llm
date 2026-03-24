@@ -100,6 +100,12 @@ def estimate_costs(gpu_type: str, hours: int, mode: str, agent_model: str,
 _AUTORESEARCH_BOOTSTRAP = """\
 import base64, os, pathlib, subprocess, sys
 os.chdir('/workspace')
+# Clone repo so git push works at end (skip if already present from a restart)
+if not pathlib.Path('samskara-llm/.git').exists():
+    token = os.environ.get('GITHUB_TOKEN', '')
+    repo_url = f'https://{token}@github.com/anandin/samskara-llm.git' if token \
+               else 'https://github.com/anandin/samskara-llm.git'
+    subprocess.run(['git', 'clone', repo_url, 'samskara-llm'], check=False)
 # train.py and program.md are mutated by the autoresearch loop;
 # skip writing them if they already exist so pod restarts don't
 # wipe accumulated research progress.
@@ -123,12 +129,37 @@ hf_repo = os.environ.get('HF_AUTORESEARCH_REPO','')
 if hf_repo:
     cmd += ['--hf-repo', hf_repo]
 subprocess.run(cmd, check=True)
+# Push outputs to GitHub and stop pod
+repo_dir = pathlib.Path('samskara-llm')
+if repo_dir.exists():
+    for src, dst in [('autoresearch/train.py',   'autoresearch/train.py'),
+                     ('autoresearch/program.md',  'autoresearch/program.md'),
+                     ('autoresearch/run_log.txt', 'autoresearch/run_log.txt')]:
+        s = pathlib.Path(src)
+        if s.exists():
+            d = repo_dir / dst
+            d.parent.mkdir(parents=True, exist_ok=True)
+            d.write_bytes(s.read_bytes())
+    subprocess.run(['git', '-C', 'samskara-llm', 'config', 'user.email', 'pod@runpod.io'], check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'config', 'user.name',  'RunPod'],        check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'add', '-A'],                             check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'commit', '-m', 'auto: autoresearch job complete'], check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'push', 'origin', 'main'],                check=False)
+pod_id = os.environ.get('RUNPOD_POD_ID', '')
+if pod_id:
+    subprocess.run(['runpodctl', 'stop', 'pod', pod_id], check=False)
 """
 
 
 _GENERATE_BOOTSTRAP = """\
 import base64, os, pathlib, subprocess, sys
 os.chdir('/workspace')
+# Clone repo so git push works at end
+if not pathlib.Path('samskara-llm/.git').exists():
+    token = os.environ.get('GITHUB_TOKEN', '')
+    repo_url = f'https://{token}@github.com/anandin/samskara-llm.git' if token \
+               else 'https://github.com/anandin/samskara-llm.git'
+    subprocess.run(['git', 'clone', repo_url, 'samskara-llm'], check=False)
 p = pathlib.Path('scripts/generate_atman_data.py')
 p.parent.mkdir(parents=True, exist_ok=True)
 p.write_bytes(base64.b64decode(os.environ['FILE_GENERATE_PY']))
@@ -148,6 +179,22 @@ result = subprocess.run(cmd)
 if result.returncode != 0:
     print('ERROR: generate_atman_data.py exited with error.')
     sys.exit(result.returncode)
+# Push output data to GitHub and stop pod
+repo_dir = pathlib.Path('samskara-llm')
+if repo_dir.exists():
+    output = pathlib.Path('data/training/train.jsonl')
+    if output.exists():
+        dst = repo_dir / 'data' / 'training' / 'train.jsonl'
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(output.read_bytes())
+    subprocess.run(['git', '-C', 'samskara-llm', 'config', 'user.email', 'pod@runpod.io'], check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'config', 'user.name',  'RunPod'],        check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'add', '-A'],                             check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'commit', '-m', 'auto: generate job complete'], check=False)
+    subprocess.run(['git', '-C', 'samskara-llm', 'push', 'origin', 'main'],                check=False)
+pod_id = os.environ.get('RUNPOD_POD_ID', '')
+if pod_id:
+    subprocess.run(['runpodctl', 'stop', 'pod', pod_id], check=False)
 """
 
 
@@ -173,6 +220,7 @@ def create_pod_config(
         {"key": "TRAINING_CONFIG", "value": training_config},
         {"key": "HF_TOKEN",        "value": os.getenv("HF_TOKEN", "")},
         {"key": "WANDB_API_KEY",   "value": os.getenv("WANDB_API_KEY", "")},
+        {"key": "GITHUB_TOKEN",    "value": os.getenv("GITHUB_TOKEN", "")},
     ]
 
     if mode == "autoresearch":

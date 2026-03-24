@@ -26,18 +26,15 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 # ── HYPERPARAMETERS (agent modifies this section) ────────────────────────────
-n_seeds            = 500       # Chitta memory bank size
-d_model            = 128       # Model dimension (keep small for 5-min runs)
-manas_layers       = 1         # Manas transformer depth
-buddhi_layers      = 3         # Buddhi transformer depth
-n_heads            = 4         # Attention heads (d_model must be divisible)
-manas_temp         = 1.5       # High temperature = associative/loose
-buddhi_temp        = 0.3       # Low temperature = focused/grounded
-chitta_top_k       = 4         # Seeds retrieved per query
-elevation_threshold = 0.35     # Escalate to Buddhi above this gate value
-n_dharma_rules     = 10        # Ethical constraint dimensions
-n_options          = 2         # Buddhi generates N candidate options
-synthesis_threshold = 0.5      # Trigger synthesis if divergence > this
+n_seeds             = 500      # Chitta memory bank size
+d_model             = 128      # Model dimension (keep small for 5-min runs)
+manas_layers        = 1        # Manas transformer depth
+buddhi_layers       = 3        # Buddhi transformer depth
+n_heads             = 4        # Attention heads (d_model must be divisible)
+manas_temp          = 1.5      # High temperature = associative/loose
+buddhi_temp         = 0.3      # Low temperature = focused/grounded
+chitta_top_k        = 4        # Seeds retrieved per query
+elevation_threshold = 0.25     # Blend threshold (post-dialogue, not a hard gate)
 loss_weights = {               # Multi-task loss weights
     "generation": 0.6,
     "elevation":  1.2,
@@ -171,35 +168,38 @@ class SamskaraMini(nn.Module):
         self.lm_head.weight = self.embed.weight
 
     def forward(self, input_ids):
-        x = self.embed(input_ids)                           # [B, T, D]
-        pooled = x.mean(dim=1)                              # [B, D]
+        x = self.embed(input_ids)                            # [B, T, D]
+        pooled = x.mean(dim=1)                               # [B, D]
 
         # Chitta memory
-        chitta_field, chitta_attn = self.chitta(pooled)    # [B, D], [B, k]
+        chitta_field, chitta_attn = self.chitta(pooled)      # [B, D], [B, k]
 
-        # Manas (fast) — inject Chitta field
-        x = x + chitta_field.unsqueeze(1)
-        manas_out = self.manas(x)                           # [B, T, D]
-        manas_pooled = manas_out.mean(dim=1)                # [B, D]
+        # 3-round iterative Manas-Buddhi dialogue
+        manas_state    = x + chitta_field.unsqueeze(1)       # initial: embed + chitta
+        buddhi_context = torch.zeros_like(manas_state)       # first round: no Buddhi feedback
 
-        # Elevation gate
+        for _ in range(3):
+            manas_out      = self.manas(manas_state + buddhi_context)  # [B, T, D]
+            buddhi_out     = self.buddhi(manas_out)                    # [B, T, D]
+            manas_state    = manas_out
+            buddhi_context = buddhi_out                                # full-sequence feedback
+
+        # ElevationRouter after dialogue — measures degree of Buddhi override
+        manas_pooled  = manas_state.mean(dim=1)              # [B, D]
+        buddhi_pooled = buddhi_out.mean(dim=1)               # [B, D]
         gate = torch.sigmoid(self.router(manas_pooled)).squeeze(-1)  # [B]
 
-        # Buddhi (slow) — always run during training (soft gate)
-        buddhi_out_seq = self.buddhi(manas_out)
-        buddhi_pooled  = buddhi_out_seq.mean(dim=1)         # [B, D]
-
-        # Soft blend: gate * buddhi + (1 - gate) * manas
+        # Soft blend always (no hard gate at inference)
         cognitive = gate.unsqueeze(-1) * buddhi_pooled + \
-                    (1 - gate).unsqueeze(-1) * manas_pooled  # [B, D]
+                    (1 - gate.unsqueeze(-1)) * manas_pooled  # [B, D]
 
-        logits = self.lm_head(cognitive)                    # [B, vocab_size]
+        logits = self.lm_head(cognitive)                     # [B, vocab_size]
 
         return {
-            "logits":          logits,
-            "elevation_gate":  gate,
+            "logits":           logits,
+            "elevation_gate":   gate,
             "chitta_attention": chitta_attn,
-            "stability":       (1.0 - gate).unsqueeze(-1),   # proxy
+            "stability":        (1.0 - gate).unsqueeze(-1),
         }
 
 
