@@ -1,4 +1,8 @@
 torch>=2.0
+transformers>=4.40
+accelerate>=0.27
+peft>=0.10
+safetensors
 openai>=1.0
 runpod>=1.6
 pyyaml>=6.0
