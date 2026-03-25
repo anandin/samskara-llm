@@ -1,0 +1,34 @@
+# Data files (generated, not tracked)
+data/training/*.jsonl
+data/autoresearch/
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
