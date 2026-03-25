@@ -23,9 +23,10 @@ Usage:
     python scripts/generate_atman_data.py --resume           # resume from existing file
 
 Env vars:
-    OPENAI_API_KEY   — required
+    OPENAI_API_KEY   — uses OpenAI (default: gpt-4o-mini)
+    ANTHROPIC_API_KEY — fallback, uses Claude (default: claude-haiku-4-5-20251001)
     OPENAI_BASE_URL  — optional, for compatible providers (Together, Groq, vLLM, etc.)
-    ATMAN_MODEL      — model name (default: gpt-4o-mini)
+    ATMAN_MODEL      — model name override
 """
 
 import argparse
@@ -224,7 +225,7 @@ def linearize_record(record):
     return "\n".join(parts)
 
 
-def generate_batch(client, category_key, batch_size, model, dry_run=False):
+def generate_batch(client, category_key, batch_size, model, dry_run=False, provider="openai"):
     """Generate a batch of ATMAN records for a single category."""
     cat = CATEGORIES[category_key]
     examples_str = "\n".join(f"  - {ex}" for ex in random.sample(cat["examples"], min(5, len(cat["examples"]))))
@@ -245,13 +246,21 @@ def generate_batch(client, category_key, batch_size, model, dry_run=False):
 
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.9,
-                max_tokens=16000,
-            )
-            content = response.choices[0].message.content.strip()
+            if provider == "anthropic":
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=16000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                content = response.content[0].text.strip()
+            else:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.9,
+                    max_tokens=16000,
+                )
+                content = response.choices[0].message.content.strip()
 
             # Strip markdown code fences if present
             if content.startswith("```"):
@@ -304,14 +313,23 @@ def main():
     train_path = output_dir / "train.jsonl"
     val_path = output_dir / "val.jsonl"
 
-    # Check for API key
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key and not args.dry_run:
-        print("ERROR: OPENAI_API_KEY environment variable not set.")
-        print("Set it with: export OPENAI_API_KEY=sk-...")
+    # Check for API key — prefer OpenAI, fallback to Anthropic
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not openai_key and not anthropic_key and not args.dry_run:
+        print("ERROR: Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is set.")
+        print("Set one with: export OPENAI_API_KEY=sk-... or export ANTHROPIC_API_KEY=sk-ant-...")
         sys.exit(1)
 
-    model = os.environ.get("ATMAN_MODEL", "gpt-4o-mini")
+    if openai_key:
+        provider = "openai"
+        api_key = openai_key
+        model = os.environ.get("ATMAN_MODEL", "gpt-4o-mini")
+    else:
+        provider = "anthropic"
+        api_key = anthropic_key
+        model = os.environ.get("ATMAN_MODEL", "claude-haiku-4-5-20251001")
+
     base_url = os.environ.get("OPENAI_BASE_URL")
 
     # Cost estimate
@@ -324,8 +342,9 @@ def main():
     total_cost = estimated_cost + input_cost
 
     print(f"SamskaraLLM ATMAN Data Generator")
+    print(f"  Provider: {provider}")
     print(f"  Model:    {model}")
-    print(f"  Base URL: {base_url or 'default (OpenAI)'}")
+    print(f"  Base URL: {base_url or 'default'}")
     print(f"  Target:   {args.count} records across {len(CATEGORIES)} categories")
     print(f"  Batches:  ~{args.count // args.batch_size} API calls of {args.batch_size} records each")
     print(f"  Est cost: ~${total_cost:.2f} (with {model})")
@@ -362,17 +381,24 @@ def main():
         print(json.dumps(sample, indent=2))
         return
 
-    # Import openai only when needed
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print("ERROR: openai package not installed. Run: pip install openai")
-        sys.exit(1)
-
-    client_kwargs = {"api_key": api_key}
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    client = OpenAI(**client_kwargs)
+    # Import SDK based on provider
+    if provider == "anthropic":
+        try:
+            import anthropic
+        except ImportError:
+            print("ERROR: anthropic package not installed. Run: pip install anthropic")
+            sys.exit(1)
+        client = anthropic.Anthropic(api_key=api_key)
+    else:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            print("ERROR: openai package not installed. Run: pip install openai")
+            sys.exit(1)
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(**client_kwargs)
 
     # Resume support
     existing_count = 0
@@ -401,11 +427,14 @@ def main():
     print(f"Per-category targets: {category_targets}")
     print()
 
-    # Confirm before proceeding
-    response = input(f"Estimated cost: ~${total_cost:.2f}. Proceed? [y/N] ")
-    if response.lower() not in ("y", "yes"):
-        print("Aborted.")
-        return
+    # Auto-proceed (non-interactive) or confirm
+    if os.environ.get("ATMAN_AUTO_CONFIRM") or not sys.stdin.isatty():
+        print(f"Auto-proceeding (estimated cost: ~${total_cost:.2f})")
+    else:
+        response = input(f"Estimated cost: ~${total_cost:.2f}. Proceed? [y/N] ")
+        if response.lower() not in ("y", "yes"):
+            print("Aborted.")
+            return
 
     # Generate
     total_generated = 0
@@ -418,7 +447,7 @@ def main():
 
             while generated_for_cat < target:
                 batch_target = min(args.batch_size, target - generated_for_cat)
-                records = generate_batch(client, cat_key, batch_target, model)
+                records = generate_batch(client, cat_key, batch_target, model, provider=provider)
 
                 for rec in records:
                     global_idx += 1
