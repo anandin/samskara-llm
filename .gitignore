@@ -1,5 +1,4 @@
-# Data files (generated, not tracked)
-data/training/*.jsonl
+# Data files
 data/autoresearch/
 
 # Model checkpoints
