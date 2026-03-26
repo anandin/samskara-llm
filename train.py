@@ -157,15 +157,45 @@ class TransformerBlock(nn.Module):
 class SamskaraMini(nn.Module):
     """
     Minimal Samskara architecture sized for 5-minute training runs.
-    Chitta → embed → Manas → ElevationRouter → (optional Buddhi) → lm_head
+    Uses the 3-round Manas-Buddhi dialogue pattern from samskara_llm/dialogue.py.
+    Chitta → embed → 3-round dialogue → Dharma → Elevation → Synthesis → lm_head
     """
     def __init__(self):
         super().__init__()
         self.embed   = nn.Embedding(vocab_size, d_model)
         self.chitta  = ChittaEncoder()
+
+        # Manas and Buddhi (shared weights across dialogue rounds)
         self.manas   = nn.Sequential(*[TransformerBlock(manas_temp) for _ in range(manas_layers)])
         self.buddhi  = nn.Sequential(*[TransformerBlock(buddhi_temp) for _ in range(buddhi_layers)])
-        self.router  = nn.Linear(d_model, 1)   # elevation gate
+
+        # 3-round dialogue cross-projections
+        self.manas_to_buddhi = nn.Linear(d_model, d_model)
+        self.buddhi_to_manas = nn.Linear(d_model, d_model)
+
+        # Manas signal heads
+        self.signal_head    = nn.Linear(d_model, 6)  # FEAR, DESIRE, PATTERN, RISK, OPPORTUNITY, NOISE
+        self.intensity_head = nn.Linear(d_model, 6)
+
+        # Buddhi option projectors
+        self.option_projectors = nn.ModuleList([
+            nn.Linear(d_model, d_model) for _ in range(n_options)
+        ])
+
+        # Dharma scoring
+        self.dharma_constraints = nn.Parameter(torch.randn(n_dharma_rules, d_model) * 0.02)
+
+        # Elevation measurement (post-dialogue shift, NOT a binary gate)
+        self.elevation_proj = nn.Linear(d_model * 2, d_model)
+        self.elevation_head = nn.Linear(d_model, 1)
+
+        # Synthesis (divergence-aware merge)
+        self.divergence_net = nn.Sequential(
+            nn.Linear(d_model * 2, d_model), nn.GELU(),
+            nn.Linear(d_model, 1), nn.Sigmoid(),
+        )
+        self.blend_proj = nn.Linear(d_model * 2, d_model)
+
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
         # Weight tying
         self.lm_head.weight = self.embed.weight
@@ -176,30 +206,69 @@ class SamskaraMini(nn.Module):
 
         # Chitta memory
         chitta_field, chitta_attn = self.chitta(pooled)    # [B, D], [B, k]
-
-        # Manas (fast) — inject Chitta field
         x = x + chitta_field.unsqueeze(1)
-        manas_out = self.manas(x)                           # [B, T, D]
-        manas_pooled = manas_out.mean(dim=1)                # [B, D]
 
-        # Elevation gate
-        gate = torch.sigmoid(self.router(manas_pooled)).squeeze(-1)  # [B]
+        # Pre-dialogue state for elevation measurement
+        pre_dialogue = x.mean(dim=1)                        # [B, D]
 
-        # Buddhi (slow) — always run during training (soft gate)
-        buddhi_out_seq = self.buddhi(manas_out)
-        buddhi_pooled  = buddhi_out_seq.mean(dim=1)         # [B, D]
+        # 3-round Manas-Buddhi dialogue (shared weights across rounds)
+        manas_input  = x
+        buddhi_input = x
+        for round_idx in range(3):
+            manas_out    = self.manas(manas_input)          # [B, T, D]
+            manas_pooled = manas_out.mean(dim=1)            # [B, D]
 
-        # Soft blend: gate * buddhi + (1 - gate) * manas
-        cognitive = gate.unsqueeze(-1) * buddhi_pooled + \
-                    (1 - gate).unsqueeze(-1) * manas_pooled  # [B, D]
+            # Send Manas signal to Buddhi
+            manas_signal = self.manas_to_buddhi(manas_pooled)
+            buddhi_input = buddhi_input + manas_signal.unsqueeze(1)
 
-        logits = self.lm_head(cognitive)                    # [B, vocab_size]
+            buddhi_out    = self.buddhi(buddhi_input)        # [B, T, D]
+            buddhi_pooled = buddhi_out.mean(dim=1)          # [B, D]
+
+            # Send Buddhi signal back to Manas (except last round)
+            if round_idx < 2:
+                buddhi_signal = self.buddhi_to_manas(buddhi_pooled)
+                manas_input = manas_input + buddhi_signal.unsqueeze(1)
+
+        # Manas signals
+        signal_logits      = self.signal_head(manas_pooled)                # [B, 6]
+        signal_intensities = torch.sigmoid(self.intensity_head(manas_pooled))  # [B, 6]
+
+        # Buddhi options + Dharma scoring
+        options = torch.stack(
+            [proj(buddhi_pooled) for proj in self.option_projectors], dim=1,
+        )                                                    # [B, n_options, D]
+        alignment = options @ self.dharma_constraints.T / math.sqrt(d_model)
+        dharma_scores = torch.sigmoid(alignment.mean(dim=-1))  # [B, n_options]
+
+        # Option selection (differentiable)
+        option_weights = F.softmax(dharma_scores, dim=-1)   # [B, n_options]
+        buddhi_final = (option_weights.unsqueeze(-1) * options).sum(dim=1)  # [B, D]
+
+        # Elevation measurement (post-dialogue cognitive shift)
+        post_dialogue = (manas_pooled + buddhi_final) / 2
+        delta = post_dialogue - pre_dialogue
+        h = F.gelu(self.elevation_proj(torch.cat([delta, pre_dialogue], dim=-1)))
+        elevation_score = torch.sigmoid(self.elevation_head(h)).squeeze(-1)  # [B]
+
+        # Synthesis (divergence-aware merge)
+        combined   = torch.cat([manas_pooled, buddhi_final], dim=-1)
+        divergence = self.divergence_net(combined).squeeze(-1)  # [B]
+        blended    = self.blend_proj(combined)               # [B, D]
+        avg        = (manas_pooled + buddhi_final) / 2
+        merged     = divergence.unsqueeze(-1) * blended + (1 - divergence).unsqueeze(-1) * avg
+
+        logits = self.lm_head(merged)                       # [B, vocab_size]
 
         return {
-            "logits":          logits,
-            "elevation_gate":  gate,
-            "chitta_attention": chitta_attn,
-            "stability":       (1.0 - gate).unsqueeze(-1),   # proxy
+            "logits":                    logits,
+            "elevation_score":           elevation_score,
+            "chitta_attention":          chitta_attn,
+            "manas_signal_logits":       signal_logits,
+            "manas_signal_intensities":  signal_intensities,
+            "buddhi_dharma_scores":      dharma_scores,
+            "divergence_score":          divergence,
+            "stability":                 (1.0 - elevation_score).unsqueeze(-1),
         }
 
 
@@ -221,7 +290,7 @@ def compute_loss(out, batch):
     target_outcome = batch["target_outcome"].to(device)
 
     gen_loss  = F.cross_entropy(logits, target_ids)
-    elev_loss = F.binary_cross_entropy(out["elevation_gate"], target_elev)
+    elev_loss = F.binary_cross_entropy(out["elevation_score"], target_elev)
     karma_loss = F.mse_loss(
         out["chitta_attention"].mean(dim=-1),
         (target_outcome + 1) / 2,
@@ -282,14 +351,14 @@ with torch.no_grad():
             break
 
         out     = model(batch["input_ids"].to(device))
-        gate    = out["elevation_gate"]                    # [B]
+        elev    = out["elevation_score"]                   # [B]
         attn    = out["chitta_attention"]                  # [B, k]
         stab    = out["stability"]                         # [B]
         elev_t  = batch["target_elevation"].to(device)    # [B]
         outcome = batch["target_outcome"].to(device)      # [B]
 
         # 1. ElevationRouter accuracy (ATMAN Fidelity)
-        elevation_acc  = ((gate > 0.5).float() == elev_t).float().mean()
+        elevation_acc  = ((elev > 0.5).float() == elev_t).float().mean()
 
         # 2. Chitta retrieval precision (peak attention weight)
         retrieval_prec = attn.max(dim=-1)[0].mean()
@@ -307,7 +376,7 @@ with torch.no_grad():
         stability_val = stab.mean()
 
         # 5. Efficiency (elevation rate near 20% — not always fast, not always slow)
-        elev_rate  = (gate > 0.5).float().mean()
+        elev_rate  = (elev > 0.5).float().mean()
         efficiency = (1.0 - (elev_rate - 0.2).abs() * 2).clamp(0.0, 1.0)
 
         s3_accum["elevation_acc"]  += elevation_acc.item()
